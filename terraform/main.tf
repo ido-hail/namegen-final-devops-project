@@ -24,3 +24,9 @@ module "network" {
   public_subnet_cidrs = var.public_subnet_cidrs
   availability_zones  = slice(data.aws_availability_zones.available.names, 0, 2)
 }
+
+module "ecr" {
+  source = "./modules/ecr"
+
+  repository_name = var.ecr_repository_name
+}

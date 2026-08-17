@@ -27,3 +27,13 @@ output "availability_zones" {
   description = "Availability Zones used by the public subnets."
   value       = module.network.availability_zones
 }
+
+output "ecr_repository_name" {
+  description = "Name of the NameGen ECR repository."
+  value       = module.ecr.repository_name
+}
+
+output "ecr_repository_url" {
+  description = "URL of the NameGen ECR repository."
+  value       = module.ecr.repository_url
+}

@@ -32,3 +32,9 @@ variable "public_subnet_cidrs" {
     error_message = "Exactly two public subnet CIDR blocks are required."
   }
 }
+
+variable "ecr_repository_name" {
+  description = "Name of the private ECR repository."
+  type        = string
+  default     = "namegen"
+}
