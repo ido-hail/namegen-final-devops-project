@@ -18,9 +18,9 @@ const getConnection = async () => {
             url = mStr + '/' + dbName;
         }
         let conn;
-        logger.info(`Attempting to connect at url: ${url}.`)
+        logger.info(`Attempting to connect to MongoDB database ${dbName}.`)
         conn = await mongoose.connect(url).catch(e =>{
-            console.error(e);
+            logger.error(`MongoDB connection attempt failed.`);
             throw e;
         });
         connection = conn;
