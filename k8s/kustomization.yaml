@@ -6,3 +6,4 @@ resources:
   - mongodb-init-configmap.yaml
   - mongodb-service.yaml
   - mongodb-statefulset.yaml
+  - namegen-deployment.yaml
