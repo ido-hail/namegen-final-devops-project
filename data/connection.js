@@ -30,10 +30,9 @@ const getConnection = async () => {
 
 const closeConnection = async () => {
     if (connection) {
-        const url = connection.url;
-        logger.info(`Closing connection into ${url}`);
+        logger.info(`Closing MongoDB connection.`);
         connection.disconnect();
-        logger.info(`Closed connection into ${url}`);
+        logger.info(`Closed MongoDB connection.`);
     }
 }
 

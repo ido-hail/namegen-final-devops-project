@@ -779,12 +779,48 @@ def verify_no_runtime_collisions(region):
         in provider.get("Arn", "")
     ]
 
+    if len(github_oidc_providers) > 1:
+        fail(
+            "Multiple GitHub Actions OIDC providers were detected. "
+            "Inspect the account before continuing."
+        )
+
+    github_oidc_provider_arn = None
+
+    if github_oidc_providers:
+        github_oidc_provider_arn = github_oidc_providers[0].get("Arn")
+
+        provider = aws_json(
+            [
+                "iam",
+                "get-open-id-connect-provider",
+                "--open-id-connect-provider-arn",
+                github_oidc_provider_arn,
+            ],
+            region,
+        )
+
+        if provider.get("Url") != "token.actions.githubusercontent.com":
+            fail("The existing GitHub OIDC provider has an unexpected URL.")
+
+        if "sts.amazonaws.com" not in provider.get("ClientIDList", []):
+            fail(
+                "The existing GitHub OIDC provider does not allow "
+                "the sts.amazonaws.com audience."
+            )
+
+        print(
+            "GitHub OIDC providers: 1 "
+            f"(reusable: {github_oidc_provider_arn})"
+        )
+    else:
+        print("GitHub OIDC providers: 0 (Terraform will create one)")
+
     checks = {
         "EKS clusters": matching_clusters,
         "ECR repositories": matching_repositories,
         "NameGen VPCs": vpcs,
         "NameGen IAM roles": matching_roles,
-        "GitHub OIDC providers": github_oidc_providers,
     }
 
     collisions = False
@@ -801,9 +837,10 @@ def verify_no_runtime_collisions(region):
         )
 
     print("PASS: No existing NameGen runtime resources were detected.")
+    return github_oidc_provider_arn
 
 
-def terraform_preview(bucket, region):
+def terraform_preview(bucket, region, github_oidc_provider_arn):
     heading("Terraform initialization")
 
     run(
@@ -880,17 +917,26 @@ def terraform_preview(bucket, region):
 
     heading("Terraform plan")
 
+    plan_command = [
+        "terraform",
+        f"-chdir={TERRAFORM_DIR}",
+        "plan",
+        "-input=false",
+        "-lock=true",
+        "-detailed-exitcode",
+        f"-var=aws_region={region}",
+    ]
+
+    if github_oidc_provider_arn:
+        plan_command.append(
+            "-var=github_oidc_provider_arn="
+            f"{github_oidc_provider_arn}"
+        )
+
+    plan_command.append("-no-color")
+
     plan = run(
-        [
-            "terraform",
-            f"-chdir={TERRAFORM_DIR}",
-            "plan",
-            "-input=false",
-            "-lock=true",
-            "-detailed-exitcode",
-            f"-var=aws_region={region}",
-            "-no-color",
-        ],
+        plan_command,
         allowed_codes=(0, 2),
     )
 
@@ -939,7 +985,9 @@ def main():
 
     bucket_ready = verify_state_bucket(bucket, args.region)
 
-    verify_no_runtime_collisions(args.region)
+    github_oidc_provider_arn = verify_no_runtime_collisions(
+        args.region
+    )
 
     if not bucket_ready:
         print(
@@ -949,7 +997,11 @@ def main():
         print("No AWS resources were created.")
         return
 
-    terraform_preview(bucket, args.region)
+    terraform_preview(
+        bucket,
+        args.region,
+        github_oidc_provider_arn,
+    )
 
     heading("Preview complete")
     print("PASS: Prerequisites and project files are available.")
