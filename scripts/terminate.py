@@ -628,7 +628,7 @@ def wait_for_external_cleanup(cleanup_targets, region):
     print("PASS: AWS confirms that the NLB and EBS volume were deleted.")
 
 
-def preview_destroy_plan(region, state_addresses):
+def build_destroy_plan(region, state_addresses):
     heading("Terraform destroy plan")
 
     with tempfile.NamedTemporaryFile(
@@ -702,10 +702,193 @@ def preview_destroy_plan(region, state_addresses):
             "PASS: Saved Terraform destroy plan contains "
             f"{len(delete_addresses)} delete-only resource changes."
         )
+    except BaseException:
+        plan_path.unlink(missing_ok=True)
+        raise
+
+    return plan_path, delete_addresses
+
+
+def confirm_destroy(skip_confirmation):
+    heading("Destroy confirmation")
+
+    if skip_confirmation:
+        print("Confirmation skipped because --yes was supplied.")
+        return
+
+    print(
+        "NameGen runtime resources will be permanently removed. "
+        "The Terraform state bucket will be retained."
+    )
+    confirmation = input("Type DESTROY to continue: ").strip()
+
+    if confirmation != "DESTROY":
+        fail("Destroy confirmation was not provided.")
+
+    print("PASS: Destroy confirmation received.")
+
+
+def apply_destroy_plan(plan_path):
+    heading("Terraform destroy apply")
+
+    run(
+        [
+            "terraform",
+            f"-chdir={TERRAFORM_DIR}",
+            "apply",
+            "-input=false",
+            str(plan_path),
+        ],
+        live=True,
+    )
+
+    print("PASS: Reviewed Terraform destroy plan applied successfully.")
+
+
+def validate_post_destroy(
+    region,
+    bucket,
+    cleanup_targets,
+    pre_destroy_inventory,
+    managed_oidc_provider,
+):
+    heading("Post-destroy validation")
+
+    remaining_state = read_terraform_state_addresses()
+    if remaining_state:
+        fail("Terraform state still contains managed runtime resources.")
+
+    remaining_inventory = read_aws_runtime_inventory(region)
+    runtime_labels = (
+        "eks_clusters",
+        "ecr_repositories",
+        "vpc_ids",
+        "iam_roles",
+    )
+    remaining_runtime = [
+        f"{label}:{resource}"
+        for label in runtime_labels
+        for resource in remaining_inventory[label]
+    ]
+
+    if remaining_runtime:
+        fail(
+            "NameGen AWS runtime resources remain: "
+            + ", ".join(remaining_runtime)
+        )
+
+    pre_oidc_count = len(
+        pre_destroy_inventory["github_oidc_providers"]
+    )
+    expected_oidc_count = pre_oidc_count - int(managed_oidc_provider)
+    actual_oidc_count = len(
+        remaining_inventory["github_oidc_providers"]
+    )
+
+    if actual_oidc_count != max(expected_oidc_count, 0):
+        fail("GitHub OIDC provider retention does not match ownership.")
+
+    load_balancers = aws_json(
+        ["elbv2", "describe-load-balancers"],
+        region,
+    ).get("LoadBalancers", [])
+    volumes = aws_json(["ec2", "describe-volumes"], region).get(
+        "Volumes", []
+    )
+
+    if cleanup_targets:
+        if any(
+            load_balancer.get("LoadBalancerArn")
+            == cleanup_targets["nlb_arn"]
+            for load_balancer in load_balancers
+        ):
+            fail("The NameGen NLB still exists after teardown.")
+
+        if any(
+            volume.get("VolumeId")
+            == cleanup_targets["ebs_volume_id"]
+            for volume in volumes
+        ):
+            fail("The MongoDB EBS volume still exists after teardown.")
+
+    reservations = aws_json(
+        [
+            "ec2",
+            "describe-instances",
+            "--filters",
+            f"Name=tag:eks:cluster-name,Values={CLUSTER_NAME}",
+            "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down",
+        ],
+        region,
+    ).get("Reservations", [])
+    remaining_instances = [
+        instance.get("InstanceId")
+        for reservation in reservations
+        for instance in reservation.get("Instances", [])
+    ]
+
+    if remaining_instances:
+        fail(
+            "NameGen EC2 instances remain after teardown: "
+            + ", ".join(remaining_instances)
+        )
+
+    if not state_bucket_exists(bucket, region):
+        fail("Terraform state bucket was removed unexpectedly.")
+
+    print("PASS: Terraform runtime state is empty.")
+    print("PASS: EKS, ECR, VPC and NameGen IAM roles are absent.")
+    print("PASS: NameGen NLB, EBS volume and EC2 instances are absent.")
+    print("PASS: GitHub OIDC provider ownership was respected.")
+    print(f"PASS: Terraform state bucket was retained: {bucket}")
+
+
+def run_destroy_workflow(
+    region,
+    bucket,
+    state_addresses,
+    inventory,
+    apply,
+    skip_confirmation,
+):
+    plan_path, delete_addresses = build_destroy_plan(
+        region,
+        state_addresses,
+    )
+    cleanup_targets = None
+
+    try:
+        if apply:
+            if not state_addresses:
+                fail("Destroy mode requires Terraform-managed runtime state.")
+
+            confirm_destroy(skip_confirmation)
+
+            if inventory["eks_clusters"]:
+                configure_eks_access(region)
+                cleanup_targets = discover_kubernetes_cleanup_targets(
+                    region
+                )
+                delete_kubernetes_runtime()
+                wait_for_external_cleanup(cleanup_targets, region)
+
+            managed_oidc_provider = any(
+                "aws_iam_openid_connect_provider.github" in address
+                for address in state_addresses
+            )
+
+            apply_destroy_plan(plan_path)
+            validate_post_destroy(
+                region,
+                bucket,
+                cleanup_targets,
+                inventory,
+                managed_oidc_provider,
+            )
     finally:
         plan_path.unlink(missing_ok=True)
 
-    print("PASS: Saved Terraform destroy preview plan was removed.")
+    print("PASS: Saved Terraform destroy plan was removed.")
     return delete_addresses
 
 
@@ -740,9 +923,13 @@ def main():
     initialize_terraform(bucket, args.region)
     state_addresses = read_terraform_state_addresses()
     inventory = read_aws_runtime_inventory(args.region)
-    delete_addresses = preview_destroy_plan(
+    delete_addresses = run_destroy_workflow(
         args.region,
+        bucket,
         state_addresses,
+        inventory,
+        apply=args.apply,
+        skip_confirmation=args.yes,
     )
 
     runtime_count = sum(
@@ -751,11 +938,17 @@ def main():
         if label != "github_oidc_providers"
     )
 
-    heading("Preview complete")
-    print(f"Terraform delete actions: {len(delete_addresses)}")
-    print(f"Detected NameGen AWS runtime resources: {runtime_count}")
-    print("No AWS or Kubernetes resources were deleted.")
-    print(f"Terraform state bucket retained: {bucket}")
+    if args.apply:
+        heading("Termination complete")
+        print(f"Terraform delete actions: {len(delete_addresses)}")
+        print("PASS: NameGen runtime resources were removed.")
+        print(f"Terraform state bucket retained: {bucket}")
+    else:
+        heading("Preview complete")
+        print(f"Terraform delete actions: {len(delete_addresses)}")
+        print(f"Detected NameGen AWS runtime resources: {runtime_count}")
+        print("No AWS or Kubernetes resources were deleted.")
+        print(f"Terraform state bucket retained: {bucket}")
 
 
 if __name__ == "__main__":
