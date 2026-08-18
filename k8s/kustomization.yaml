@@ -7,3 +7,4 @@ resources:
   - mongodb-service.yaml
   - mongodb-statefulset.yaml
   - namegen-deployment.yaml
+  - namegen-service.yaml
