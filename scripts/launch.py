@@ -1079,6 +1079,213 @@ def apply_monitoring_stack():
     )
 
 
+def validate_monitoring_runtime():
+    heading("Monitoring runtime validation")
+
+    releases = json.loads(
+        run(
+            [
+                "helm",
+                "list",
+                "--namespace",
+                MONITORING_NAMESPACE,
+                "--filter",
+                f"^{MONITORING_RELEASE}$",
+                "--output",
+                "json",
+            ]
+        ).stdout
+    )
+
+    expected_chart = (
+        f"kube-prometheus-stack-{MONITORING_CHART_VERSION}"
+    )
+
+    if (
+        len(releases) != 1
+        or releases[0].get("name") != MONITORING_RELEASE
+        or releases[0].get("status") != "deployed"
+        or releases[0].get("chart") != expected_chart
+    ):
+        fail(
+            "The pinned kube-prometheus-stack Helm release is not "
+            "deployed."
+        )
+
+    workloads = (
+        "deployment/namegen-monitoring-grafana",
+        "deployment/namegen-monitoring-kube-state-metrics",
+        "deployment/namegen-monitoring-kube-pr-operator",
+        "statefulset/prometheus-namegen-monitoring-kube-pr-prometheus",
+    )
+
+    for workload in workloads:
+        run(
+            [
+                "kubectl",
+                "--namespace",
+                MONITORING_NAMESPACE,
+                "rollout",
+                "status",
+                workload,
+                "--timeout=15m",
+            ],
+            live=True,
+        )
+
+    for deployment_name in (
+        "namegen-monitoring-grafana",
+        "namegen-monitoring-kube-state-metrics",
+        "namegen-monitoring-kube-pr-operator",
+    ):
+        deployment = kubectl_json(
+            [
+                "--namespace",
+                MONITORING_NAMESPACE,
+                "get",
+                "deployment",
+                deployment_name,
+            ]
+        )
+        desired = deployment.get("spec", {}).get("replicas", 0)
+        ready = deployment.get("status", {}).get("readyReplicas", 0)
+
+        if desired != 1 or ready != desired:
+            fail(
+                f"Monitoring Deployment {deployment_name} is not "
+                "exactly one Ready replica."
+            )
+
+    prometheus = kubectl_json(
+        [
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "get",
+            "statefulset",
+            "prometheus-namegen-monitoring-kube-pr-prometheus",
+        ]
+    )
+
+    if (
+        prometheus.get("spec", {}).get("replicas") != 1
+        or prometheus.get("status", {}).get("readyReplicas", 0) != 1
+    ):
+        fail("Prometheus is not exactly one Ready replica.")
+
+    grafana_secret = kubectl_json(
+        [
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "get",
+            "secret",
+            GRAFANA_SECRET_NAME,
+        ]
+    )
+    secret_keys = set(grafana_secret.get("data", {}))
+
+    if secret_keys != {"admin-user", "admin-password"}:
+        fail("The Grafana runtime Secret has unexpected keys.")
+
+    dashboard_configmap = kubectl_json(
+        [
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "get",
+            "configmap",
+            "namegen-grafana-dashboard",
+        ]
+    )
+    dashboard_text = dashboard_configmap.get("data", {}).get(
+        "namegen-dashboard.json"
+    )
+
+    if not dashboard_text:
+        fail("The NameGen Grafana dashboard was not loaded.")
+
+    dashboard = json.loads(dashboard_text)
+    panel_titles = {
+        panel.get("title") for panel in dashboard.get("panels", [])
+    }
+    expected_panels = {
+        "Ready Pods",
+        "Pod Restarts",
+        "CPU Usage by Pod",
+        "Memory Usage by Pod",
+    }
+
+    if (
+        dashboard.get("uid") != "namegen-runtime"
+        or panel_titles != expected_panels
+    ):
+        fail("The NameGen Grafana dashboard content is incomplete.")
+
+    for service_name in (
+        "namegen-monitoring-grafana",
+        "namegen-monitoring-kube-pr-prometheus",
+    ):
+        service = kubectl_json(
+            [
+                "--namespace",
+                MONITORING_NAMESPACE,
+                "get",
+                "service",
+                service_name,
+            ]
+        )
+
+        if service.get("spec", {}).get("type") != "ClusterIP":
+            fail(
+                f"Monitoring Service {service_name} is publicly exposed."
+            )
+
+    query = (
+        'kube_pod_status_ready{namespace="namegen",condition="true"}'
+    )
+    query_path = (
+        "/api/v1/namespaces/monitoring/services/"
+        "http:namegen-monitoring-kube-pr-prometheus:9090/"
+        f"proxy/api/v1/query?query={quote(query, safe='')}"
+    )
+    metric_results = None
+
+    for attempt in range(1, 31):
+        response = run(
+            ["kubectl", "get", f"--raw={query_path}"],
+            allowed_codes=(0, 1),
+        )
+
+        if response.returncode == 0:
+            try:
+                payload = json.loads(response.stdout)
+            except json.JSONDecodeError:
+                payload = {}
+
+            results = payload.get("data", {}).get("result", [])
+            if payload.get("status") == "success" and results:
+                metric_results = results
+                break
+
+        print(f"Waiting for NameGen Prometheus metrics ({attempt}/30)...")
+        time.sleep(10)
+
+    if not metric_results:
+        fail("Prometheus did not return NameGen Pod readiness metrics.")
+
+    print(f"Helm release: {MONITORING_RELEASE} ({expected_chart})")
+    print(f"Dashboard UID: {dashboard['uid']}")
+    print("PASS: Grafana, Prometheus and exporters are Ready.")
+    print("PASS: Monitoring Services are internal ClusterIP Services.")
+    print("PASS: The NameGen dashboard is loaded with four panels.")
+    print("PASS: Prometheus returned live NameGen readiness metrics.")
+
+    return {
+        "release": MONITORING_RELEASE,
+        "chart": expected_chart,
+        "dashboard_uid": dashboard["uid"],
+        "metric_series": len(metric_results),
+    }
+
+
 def verify_git_status(apply):
     heading("Git working tree")
 
@@ -1990,6 +2197,10 @@ def terraform_preview(
                     runtime_outputs["public_url"],
                     git_sha,
                 )
+            )
+            apply_monitoring_stack()
+            runtime_outputs["monitoring"] = (
+                validate_monitoring_runtime()
             )
     finally:
         plan_path.unlink(missing_ok=True)
