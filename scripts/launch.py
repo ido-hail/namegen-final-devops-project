@@ -756,6 +756,125 @@ def validate_public_application(hostname, region):
     return base_url
 
 
+def validate_mongodb_persistence(base_url, git_sha):
+    heading("MongoDB persistence validation")
+
+    marker = {
+        "firstName": "Persistence",
+        "lastName": f"Git{git_sha[:12]}",
+    }
+
+    save_status, save_body = http_request(
+        f"{base_url}/api/names",
+        method="POST",
+        payload=marker,
+    )
+    save_result = json.loads(save_body)
+
+    if save_status != 200 or save_result.get("status") != 200:
+        fail("The persistence marker could not be saved before Pod deletion.")
+
+    before_pod = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "pod",
+            "mongodb-0",
+        ]
+    )
+    before_uid = before_pod.get("metadata", {}).get("uid")
+
+    pvc = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "persistentvolumeclaim",
+            "mongodb-data-mongodb-0",
+        ]
+    )
+    before_volume = pvc.get("spec", {}).get("volumeName")
+
+    if not before_uid or not before_volume:
+        fail("MongoDB Pod UID or PersistentVolume was unavailable.")
+
+    run(
+        [
+            "kubectl",
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "delete",
+            "pod",
+            "mongodb-0",
+            "--wait=true",
+            "--timeout=5m",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "kubectl",
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "rollout",
+            "status",
+            "statefulset/mongodb",
+            "--timeout=20m",
+        ],
+        live=True,
+    )
+
+    after_pod = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "pod",
+            "mongodb-0",
+        ]
+    )
+    after_uid = after_pod.get("metadata", {}).get("uid")
+
+    pvc = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "persistentvolumeclaim",
+            "mongodb-data-mongodb-0",
+        ]
+    )
+    after_volume = pvc.get("spec", {}).get("volumeName")
+
+    if not after_uid or after_uid == before_uid:
+        fail("MongoDB Pod was not recreated with a new UID.")
+
+    if after_volume != before_volume:
+        fail("MongoDB Pod recreation did not retain the same volume.")
+
+    wait_for_public_application(base_url)
+    list_status, list_body = http_request(f"{base_url}/api/names")
+    stored_names = json.loads(list_body)
+
+    if list_status != 200 or not isinstance(stored_names, list):
+        fail("Names could not be retrieved after MongoDB Pod recreation.")
+
+    if not any(
+        person.get("firstName") == marker["firstName"]
+        and person.get("lastName") == marker["lastName"]
+        for person in stored_names
+    ):
+        fail("Persistence marker was lost after MongoDB Pod recreation.")
+
+    print(f"MongoDB Pod UID before: {before_uid}")
+    print(f"MongoDB Pod UID after:  {after_uid}")
+    print(f"PersistentVolume retained: {before_volume}")
+    print("PASS: MongoDB data survived Pod recreation.")
+    return marker
+
+
 def validate_monitoring_configuration():
     heading("Monitoring configuration validation")
 
@@ -1865,6 +1984,12 @@ def terraform_preview(
             runtime_outputs["public_url"] = validate_public_application(
                 nlb_hostname,
                 region,
+            )
+            runtime_outputs["persistence_marker"] = (
+                validate_mongodb_persistence(
+                    runtime_outputs["public_url"],
+                    git_sha,
+                )
             )
     finally:
         plan_path.unlink(missing_ok=True)
