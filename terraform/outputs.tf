@@ -37,3 +37,23 @@ output "ecr_repository_url" {
   description = "URL of the NameGen ECR repository."
   value       = module.ecr.repository_url
 }
+
+output "eks_cluster_name" {
+  description = "Name of the EKS Auto Mode cluster."
+  value       = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  description = "Kubernetes API endpoint."
+  value       = module.eks.cluster_endpoint
+}
+
+output "eks_cluster_role_arn" {
+  description = "ARN of the EKS Auto Mode cluster role."
+  value       = module.eks.cluster_role_arn
+}
+
+output "eks_node_role_arn" {
+  description = "ARN of the EKS Auto Mode node role."
+  value       = module.eks.node_role_arn
+}

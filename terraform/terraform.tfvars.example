@@ -2,3 +2,6 @@ aws_region          = "us-east-1"
 project_name        = "namegen"
 environment         = "dev"
 ecr_repository_name = "namegen"
+eks_cluster_name        = "namegen-eks"
+eks_kubernetes_version  = "1.35"
+eks_public_access_cidrs = ["0.0.0.0/0"]

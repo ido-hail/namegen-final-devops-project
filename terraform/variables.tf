@@ -38,3 +38,21 @@ variable "ecr_repository_name" {
   type        = string
   default     = "namegen"
 }
+
+variable "eks_cluster_name" {
+  description = "Name of the EKS Auto Mode cluster."
+  type        = string
+  default     = "namegen-eks"
+}
+
+variable "eks_kubernetes_version" {
+  description = "Kubernetes version used by EKS."
+  type        = string
+  default     = "1.35"
+}
+
+variable "eks_public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API endpoint."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}

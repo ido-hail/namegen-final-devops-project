@@ -30,3 +30,13 @@ module "ecr" {
 
   repository_name = var.ecr_repository_name
 }
+
+module "eks" {
+  source = "./modules/eks"
+
+  cluster_name        = var.eks_cluster_name
+  kubernetes_version  = var.eks_kubernetes_version
+  subnet_ids          = module.network.public_subnet_ids
+  public_access_cidrs = var.eks_public_access_cidrs
+  aws_partition       = data.aws_partition.current.partition
+}
