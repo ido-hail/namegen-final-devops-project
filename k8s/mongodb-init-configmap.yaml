@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-init
+  namespace: namegen
+  labels:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/part-of: namegen
+data:
+  01-create-app-user.sh: |
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    : "${MONGO_INITDB_DATABASE:?MONGO_INITDB_DATABASE is required}"
+    : "${MONGO_APP_USERNAME:?MONGO_APP_USERNAME is required}"
+    : "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is required}"
+
+    app_username_json="$(
+      jq --null-input --arg value "$MONGO_APP_USERNAME" '$value'
+    )"
+    app_password_json="$(
+      jq --null-input --arg value "$MONGO_APP_PASSWORD" '$value'
+    )"
+    app_database_json="$(
+      jq --null-input --arg value "$MONGO_INITDB_DATABASE" '$value'
+    )"
+
+    mongo \
+      --host 127.0.0.1 \
+      --port 27017 \
+      --quiet \
+      "$MONGO_INITDB_DATABASE" <<EOJS
+    db.createUser({
+      user: ${app_username_json},
+      pwd: ${app_password_json},
+      roles: [
+        {
+          role: "readWrite",
+          db: ${app_database_json}
+        }
+      ]
+    })
+    EOJS
+
+    echo "MongoDB application user created."

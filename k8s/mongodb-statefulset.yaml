@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: namegen
+  labels:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/part-of: namegen
+spec:
+  serviceName: mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/instance: namegen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/instance: namegen
+        app.kubernetes.io/part-of: namegen
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mongodb
+          image: mongo:3.6
+          imagePullPolicy: IfNotPresent
+          args:
+            - --auth
+            - --bind_ip_all
+          ports:
+            - name: mongodb
+              containerPort: 27017
+              protocol: TCP
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: namegen
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-credentials
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-credentials
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-credentials
+                  key: MONGO_APP_USERNAME
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-credentials
+                  key: MONGO_APP_PASSWORD
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  mongo namegen \
+                    --host 127.0.0.1 \
+                    --port 27017 \
+                    --quiet \
+                    --username "$MONGO_APP_USERNAME" \
+                    --password "$MONGO_APP_PASSWORD" \
+                    --authenticationDatabase namegen \
+                    --eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)'
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  mongo namegen \
+                    --host 127.0.0.1 \
+                    --port 27017 \
+                    --quiet \
+                    --username "$MONGO_APP_USERNAME" \
+                    --password "$MONGO_APP_PASSWORD" \
+                    --authenticationDatabase namegen \
+                    --eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)'
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+            - name: mongodb-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: mongodb-init
+          configMap:
+            name: mongodb-init
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-data
+        labels:
+          app.kubernetes.io/name: mongodb
+          app.kubernetes.io/part-of: namegen
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: namegen-gp3
+        resources:
+          requests:
+            storage: 5Gi

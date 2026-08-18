@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: namegen
+  labels:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/part-of: namegen
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: namegen
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+      protocol: TCP
