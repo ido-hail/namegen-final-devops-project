@@ -168,6 +168,12 @@ def aws_json(arguments, region):
     return json.loads(output) if output else {}
 
 
+def kubectl_json(arguments):
+    result = run(["kubectl", *arguments, "--output=json"])
+    output = result.stdout.strip()
+    return json.loads(output) if output else {}
+
+
 def parse_arguments():
     default_region = (
         os.environ.get("AWS_REGION")
@@ -364,6 +370,172 @@ def apply_runtime_manifests(image_reference):
         rendered,
         "kubectl apply --filename - # rendered Kubernetes manifests",
     )
+
+    run(
+        [
+            "kubectl",
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "rollout",
+            "status",
+            "statefulset/mongodb",
+            "--timeout=20m",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "kubectl",
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "rollout",
+            "status",
+            "deployment/namegen",
+            "--timeout=15m",
+        ],
+        live=True,
+    )
+
+    print("PASS: MongoDB and NameGen rollouts completed.")
+
+
+def validate_runtime_workloads(image_reference, region):
+    heading("Kubernetes runtime validation")
+
+    secret = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "secret",
+            MONGODB_SECRET_NAME,
+        ]
+    )
+    expected_secret_keys = {
+        "MONGO_INITDB_ROOT_USERNAME",
+        "MONGO_INITDB_ROOT_PASSWORD",
+        "MONGO_APP_USERNAME",
+        "MONGO_APP_PASSWORD",
+        "MONGODB_URL",
+    }
+
+    if set(secret.get("data", {})) != expected_secret_keys:
+        fail("MongoDB runtime Secret does not contain the expected keys.")
+
+    deployment = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "deployment",
+            "namegen",
+        ]
+    )
+
+    if deployment.get("spec", {}).get("replicas") != 2:
+        fail("NameGen Deployment does not request exactly two replicas.")
+
+    if deployment.get("status", {}).get("readyReplicas", 0) != 2:
+        fail("NameGen Deployment does not have exactly two Ready replicas.")
+
+    application_containers = deployment.get("spec", {}).get(
+        "template", {}
+    ).get("spec", {}).get("containers", [])
+
+    if len(application_containers) != 1:
+        fail("NameGen Deployment has an unexpected container count.")
+
+    if application_containers[0].get("image") != image_reference:
+        fail("NameGen Deployment is not running the expected Git SHA image.")
+
+    statefulset = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "statefulset",
+            "mongodb",
+        ]
+    )
+
+    if statefulset.get("status", {}).get("readyReplicas", 0) != 1:
+        fail("MongoDB StatefulSet does not have exactly one Ready replica.")
+
+    mongodb_containers = statefulset.get("spec", {}).get(
+        "template", {}
+    ).get("spec", {}).get("containers", [])
+
+    if (
+        len(mongodb_containers) != 1
+        or mongodb_containers[0].get("image") != "mongo:3.6"
+    ):
+        fail("MongoDB StatefulSet is not running mongo:3.6.")
+
+    pvc = kubectl_json(
+        [
+            "--namespace",
+            KUBERNETES_NAMESPACE,
+            "get",
+            "persistentvolumeclaim",
+            "mongodb-data-mongodb-0",
+        ]
+    )
+
+    pvc_spec = pvc.get("spec", {})
+
+    if pvc.get("status", {}).get("phase") != "Bound":
+        fail("MongoDB PVC is not Bound.")
+
+    if pvc_spec.get("storageClassName") != "namegen-gp3":
+        fail("MongoDB PVC does not use the namegen-gp3 StorageClass.")
+
+    if pvc_spec.get("resources", {}).get("requests", {}).get(
+        "storage"
+    ) != "1Gi":
+        fail("MongoDB PVC does not request exactly 1Gi.")
+
+    persistent_volume_name = pvc_spec.get("volumeName")
+
+    if not persistent_volume_name:
+        fail("MongoDB PVC does not reference a PersistentVolume.")
+
+    persistent_volume = kubectl_json(
+        ["get", "persistentvolume", persistent_volume_name]
+    )
+    csi = persistent_volume.get("spec", {}).get("csi", {})
+
+    if csi.get("driver") != "ebs.csi.eks.amazonaws.com":
+        fail("MongoDB PersistentVolume is not managed by EKS Auto Mode EBS.")
+
+    volume_id = csi.get("volumeHandle")
+
+    if not volume_id or not re.fullmatch(r"vol-[0-9a-f]+", volume_id):
+        fail("MongoDB PersistentVolume has an invalid EBS volume ID.")
+
+    volumes = aws_json(
+        ["ec2", "describe-volumes", "--volume-ids", volume_id],
+        region,
+    ).get("Volumes", [])
+
+    if len(volumes) != 1:
+        fail("AWS did not return exactly one MongoDB EBS volume.")
+
+    volume = volumes[0]
+
+    if volume.get("VolumeType") != "gp3":
+        fail("MongoDB EBS volume is not gp3.")
+
+    if volume.get("Encrypted") is not True:
+        fail("MongoDB EBS volume is not encrypted.")
+
+    if volume.get("Size") != 1:
+        fail("MongoDB EBS volume is not exactly 1 GiB.")
+
+    print("PASS: NameGen has exactly two Ready replicas.")
+    print("PASS: MongoDB 3.6 has exactly one Ready replica.")
+    print(f"PASS: PVC is Bound to encrypted gp3 volume {volume_id}.")
+    return volume_id
 
 
 def validate_monitoring_configuration():
@@ -1465,6 +1637,11 @@ def terraform_preview(
                 runtime_outputs["ecr_repository_url"],
                 region,
                 git_sha,
+            )
+            apply_runtime_manifests(runtime_outputs["image_reference"])
+            runtime_outputs["ebs_volume_id"] = validate_runtime_workloads(
+                runtime_outputs["image_reference"],
+                region,
             )
     finally:
         plan_path.unlink(missing_ok=True)
