@@ -102,6 +102,12 @@ def aws_json(arguments, region):
     return json.loads(output) if output else {}
 
 
+def kubectl_json(arguments):
+    result = run(["kubectl", *arguments, "--output=json"])
+    output = result.stdout.strip()
+    return json.loads(output) if output else {}
+
+
 def parse_arguments():
     default_region = (
         os.environ.get("AWS_REGION")
@@ -392,6 +398,234 @@ def read_aws_runtime_inventory(region):
     )
 
     return inventory
+
+
+def configure_eks_access(region):
+    heading("EKS access configuration")
+
+    cluster = aws_json(
+        ["eks", "describe-cluster", "--name", CLUSTER_NAME],
+        region,
+    ).get("cluster", {})
+
+    if cluster.get("status") != "ACTIVE":
+        fail("The NameGen EKS cluster is not ACTIVE.")
+
+    run(
+        [
+            "aws",
+            "eks",
+            "update-kubeconfig",
+            "--name",
+            CLUSTER_NAME,
+            "--region",
+            region,
+            "--alias",
+            CLUSTER_NAME,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    ready = run(["kubectl", "get", "--raw=/readyz"])
+    if ready.stdout.strip() != "ok":
+        fail("Kubernetes API readiness endpoint did not return ok.")
+
+    print("PASS: EKS cluster is ACTIVE and Kubernetes API access works.")
+
+
+def discover_kubernetes_cleanup_targets(region):
+    heading("Kubernetes cleanup target discovery")
+
+    service = kubectl_json(
+        ["--namespace", "namegen", "get", "service", "namegen"]
+    )
+    ingress = service.get("status", {}).get(
+        "loadBalancer", {}
+    ).get("ingress", [])
+    hostnames = [
+        item.get("hostname") for item in ingress if item.get("hostname")
+    ]
+
+    if len(hostnames) != 1:
+        fail("The NameGen Service does not expose exactly one NLB hostname.")
+
+    hostname = hostnames[0]
+    load_balancers = aws_json(
+        ["elbv2", "describe-load-balancers"],
+        region,
+    ).get("LoadBalancers", [])
+    matching_load_balancers = [
+        load_balancer
+        for load_balancer in load_balancers
+        if load_balancer.get("DNSName") == hostname
+    ]
+
+    if len(matching_load_balancers) != 1:
+        fail("AWS did not return exactly one matching NameGen NLB.")
+
+    load_balancer = matching_load_balancers[0]
+    if (
+        load_balancer.get("Type") != "network"
+        or load_balancer.get("Scheme") != "internet-facing"
+    ):
+        fail("The discovered NameGen load balancer is not the public NLB.")
+
+    load_balancer_arn = load_balancer.get("LoadBalancerArn")
+    if not load_balancer_arn:
+        fail("The NameGen NLB ARN is unavailable.")
+
+    pvc = kubectl_json(
+        [
+            "--namespace",
+            "namegen",
+            "get",
+            "persistentvolumeclaim",
+            "mongodb-data-mongodb-0",
+        ]
+    )
+    persistent_volume_name = pvc.get("spec", {}).get("volumeName")
+
+    if not persistent_volume_name:
+        fail("The MongoDB PVC is not bound to a PersistentVolume.")
+
+    persistent_volume = kubectl_json(
+        ["get", "persistentvolume", persistent_volume_name]
+    )
+    csi = persistent_volume.get("spec", {}).get("csi", {})
+
+    if csi.get("driver") != "ebs.csi.eks.amazonaws.com":
+        fail("The MongoDB PersistentVolume is not managed by EKS Auto Mode.")
+
+    volume_id = csi.get("volumeHandle")
+    if not re.fullmatch(r"vol-[0-9a-f]+", volume_id or ""):
+        fail("The MongoDB EBS Volume ID is invalid.")
+
+    print(f"NLB hostname: {hostname}")
+    print(f"NLB ARN: {load_balancer_arn}")
+    print(f"MongoDB PersistentVolume: {persistent_volume_name}")
+    print(f"MongoDB EBS volume: {volume_id}")
+    print("PASS: External cleanup targets were discovered before deletion.")
+
+    return {
+        "nlb_hostname": hostname,
+        "nlb_arn": load_balancer_arn,
+        "persistent_volume_name": persistent_volume_name,
+        "ebs_volume_id": volume_id,
+    }
+
+
+def delete_kubernetes_runtime():
+    heading("Kubernetes runtime cleanup")
+
+    monitoring_release = run(
+        [
+            "helm",
+            "list",
+            "--namespace",
+            "monitoring",
+            "--filter",
+            "^namegen-monitoring$",
+            "--short",
+        ],
+        allowed_codes=(0, 1),
+    ).stdout.strip()
+
+    if monitoring_release == "namegen-monitoring":
+        run(
+            [
+                "helm",
+                "uninstall",
+                "namegen-monitoring",
+                "--namespace",
+                "monitoring",
+                "--wait",
+                "--timeout",
+                "15m",
+            ],
+            live=True,
+        )
+    elif monitoring_release:
+        fail("An unexpected monitoring Helm release was returned.")
+    else:
+        print("Monitoring Helm release is already absent.")
+
+    run(
+        [
+            "kubectl",
+            "delete",
+            "namespace",
+            "monitoring",
+            "--ignore-not-found=true",
+            "--wait=true",
+            "--timeout=15m",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "kubectl",
+            "delete",
+            "namespace",
+            "namegen",
+            "--ignore-not-found=true",
+            "--wait=true",
+            "--timeout=20m",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "kubectl",
+            "delete",
+            "storageclass",
+            "namegen-gp3",
+            "--ignore-not-found=true",
+            "--wait=true",
+            "--timeout=5m",
+        ],
+        live=True,
+    )
+
+    print("PASS: Monitoring and NameGen Kubernetes resources were removed.")
+
+
+def wait_for_external_cleanup(cleanup_targets, region):
+    heading("AWS load balancer and volume cleanup")
+
+    run(
+        [
+            "aws",
+            "elbv2",
+            "wait",
+            "load-balancers-deleted",
+            "--load-balancer-arns",
+            cleanup_targets["nlb_arn"],
+            "--region",
+            region,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "aws",
+            "ec2",
+            "wait",
+            "volume-deleted",
+            "--volume-ids",
+            cleanup_targets["ebs_volume_id"],
+            "--region",
+            region,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    print("PASS: AWS confirms that the NLB and EBS volume were deleted.")
 
 
 def preview_destroy_plan(region, state_addresses):
