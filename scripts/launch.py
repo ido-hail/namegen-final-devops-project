@@ -195,7 +195,7 @@ def parse_arguments():
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip the future interactive Apply confirmation.",
+        help="Skip the interactive Apply confirmation.",
     )
     return parser.parse_args()
 
@@ -959,7 +959,49 @@ def verify_no_runtime_collisions(region):
     return github_oidc_provider_arn
 
 
-def terraform_preview(bucket, region, github_oidc_provider_arn):
+def confirm_runtime_apply(skip_confirmation):
+    heading("Apply confirmation")
+
+    if skip_confirmation:
+        print("Confirmation skipped because --yes was supplied.")
+        return
+
+    print(
+        "Terraform will now create billable AWS resources, including "
+        "EKS, EC2 compute, EBS and an internet-facing NLB."
+    )
+    confirmation = input("Type APPLY to continue: ").strip()
+
+    if confirmation != "APPLY":
+        fail("Apply confirmation was not provided.")
+
+    print("PASS: Apply confirmation received.")
+
+
+def apply_terraform_plan(plan_path):
+    heading("Terraform apply")
+
+    run(
+        [
+            "terraform",
+            f"-chdir={TERRAFORM_DIR}",
+            "apply",
+            "-input=false",
+            str(plan_path),
+        ],
+        live=True,
+    )
+
+    print("PASS: Saved Terraform plan applied successfully.")
+
+
+def terraform_preview(
+    bucket,
+    region,
+    github_oidc_provider_arn,
+    apply=False,
+    skip_confirmation=False,
+):
     heading("Terraform initialization")
 
     run(
@@ -1036,46 +1078,107 @@ def terraform_preview(bucket, region, github_oidc_provider_arn):
 
     heading("Terraform plan")
 
-    plan_command = [
-        "terraform",
-        f"-chdir={TERRAFORM_DIR}",
-        "plan",
-        "-input=false",
-        "-lock=true",
-        "-detailed-exitcode",
-        f"-var=aws_region={region}",
-    ]
+    with tempfile.NamedTemporaryFile(
+        prefix="namegen-runtime-",
+        suffix=".tfplan",
+        delete=False,
+    ) as plan_file:
+        plan_path = Path(plan_file.name)
 
-    if github_oidc_provider_arn:
-        plan_command.append(
-            "-var=github_oidc_provider_arn="
-            f"{github_oidc_provider_arn}"
+    plan_path.unlink()
+
+    try:
+        plan_command = [
+            "terraform",
+            f"-chdir={TERRAFORM_DIR}",
+            "plan",
+            "-input=false",
+            "-lock=true",
+            "-detailed-exitcode",
+            f"-var=aws_region={region}",
+            f"-out={plan_path}",
+            "-no-color",
+        ]
+
+        if github_oidc_provider_arn:
+            plan_command.append(
+                "-var=github_oidc_provider_arn="
+                f"{github_oidc_provider_arn}"
+            )
+
+        plan = run(
+            plan_command,
+            allowed_codes=(0, 2),
         )
 
-    plan_command.append("-no-color")
+        if plan.stdout:
+            print(plan.stdout.rstrip())
 
-    plan = run(
-        plan_command,
-        allowed_codes=(0, 2),
-    )
+        if plan.stderr:
+            print(plan.stderr.rstrip(), file=sys.stderr)
 
-    if plan.stdout:
-        print(plan.stdout.rstrip())
+        summary = re.search(
+            r"Plan:\s+\d+\s+to add,\s+\d+\s+to change,"
+            r"\s+\d+\s+to destroy\.",
+            plan.stdout,
+        )
 
-    if plan.stderr:
-        print(plan.stderr.rstrip(), file=sys.stderr)
+        if summary:
+            print(f"\nTerraform summary: {summary.group(0)}")
+        elif plan.returncode == 0:
+            print("\nTerraform summary: No infrastructure changes.")
+        else:
+            fail(
+                "Terraform plan changed resources but no summary was found."
+            )
 
-    summary = re.search(
-        r"Plan:\s+\d+\s+to add,\s+\d+\s+to change,\s+\d+\s+to destroy\.",
-        plan.stdout,
-    )
+        plan_json = run(
+            [
+                "terraform",
+                f"-chdir={TERRAFORM_DIR}",
+                "show",
+                "-json",
+                str(plan_path),
+            ]
+        )
 
-    if summary:
-        print(f"\nTerraform summary: {summary.group(0)}")
-    elif plan.returncode == 0:
-        print("\nTerraform summary: No infrastructure changes.")
-    else:
-        fail("Terraform plan changed resources but no summary was found.")
+        resource_changes = json.loads(
+            plan_json.stdout
+        ).get("resource_changes", [])
+
+        unsafe_changes = [
+            change.get("address", "<unknown>")
+            for change in resource_changes
+            if any(
+                action in {"update", "delete"}
+                for action in change.get("change", {}).get("actions", [])
+            )
+        ]
+
+        if unsafe_changes:
+            fail(
+                "Terraform plan contains update, replacement or destroy "
+                "actions: "
+                + ", ".join(unsafe_changes)
+            )
+
+        create_count = sum(
+            change.get("change", {}).get("actions") == ["create"]
+            for change in resource_changes
+        )
+
+        print(
+            "PASS: Saved Terraform plan contains "
+            f"{create_count} create-only resource changes."
+        )
+
+        if apply:
+            confirm_runtime_apply(skip_confirmation)
+            apply_terraform_plan(plan_path)
+    finally:
+        plan_path.unlink(missing_ok=True)
+
+    print("PASS: Saved Terraform plan was removed.")
 
 
 def main():
@@ -1125,6 +1228,8 @@ def main():
         bucket,
         args.region,
         github_oidc_provider_arn,
+        apply=args.apply,
+        skip_confirmation=args.yes,
     )
 
     heading("Preview complete")
