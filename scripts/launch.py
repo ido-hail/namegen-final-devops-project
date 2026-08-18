@@ -2209,6 +2209,92 @@ def terraform_preview(
     return runtime_outputs
 
 
+def print_apply_summary(runtime_outputs, state_bucket, git_sha):
+    required_values = (
+        "aws_account_id",
+        "aws_region",
+        "eks_cluster_name",
+        "ecr_repository_url",
+        "image_reference",
+        "ebs_volume_id",
+        "public_url",
+        "persistence_marker",
+        "monitoring",
+    )
+    missing_values = [
+        name for name in required_values if not runtime_outputs.get(name)
+    ]
+
+    if missing_values:
+        fail(
+            "Deployment summary is missing validated evidence: "
+            + ", ".join(missing_values)
+        )
+
+    image_reference = runtime_outputs["image_reference"]
+    expected_image_suffix = f":{git_sha}"
+
+    if not image_reference.endswith(expected_image_suffix):
+        fail("Deployment summary image does not match the Git SHA.")
+
+    public_url = runtime_outputs["public_url"]
+    if not re.fullmatch(r"http://[A-Za-z0-9.-]+", public_url):
+        fail("Deployment summary contains an invalid public URL.")
+
+    expected_marker = {
+        "firstName": "Persistence",
+        "lastName": f"Git{git_sha[:12]}",
+    }
+    if runtime_outputs["persistence_marker"] != expected_marker:
+        fail("Deployment summary persistence evidence is invalid.")
+
+    monitoring = runtime_outputs["monitoring"]
+    expected_chart = (
+        f"kube-prometheus-stack-{MONITORING_CHART_VERSION}"
+    )
+
+    if (
+        monitoring.get("release") != MONITORING_RELEASE
+        or monitoring.get("chart") != expected_chart
+        or monitoring.get("dashboard_uid") != "namegen-runtime"
+        or monitoring.get("metric_series", 0) < 1
+    ):
+        fail("Deployment summary monitoring evidence is invalid.")
+
+    heading("Deployment complete")
+    print(f"AWS account: {runtime_outputs['aws_account_id']}")
+    print(f"AWS Region: {runtime_outputs['aws_region']}")
+    print(f"Terraform state bucket: {state_bucket}")
+    print(f"EKS cluster: {runtime_outputs['eks_cluster_name']}")
+    print(f"ECR repository: {runtime_outputs['ecr_repository_url']}")
+    print(f"Immutable image: {image_reference}")
+    print(f"MongoDB EBS volume: {runtime_outputs['ebs_volume_id']}")
+    print(f"Public URL: {public_url}")
+    print(
+        "Persistence marker: "
+        f"{expected_marker['firstName']} {expected_marker['lastName']}"
+    )
+    print(
+        "Monitoring: "
+        f"{monitoring['release']} ({monitoring['chart']})"
+    )
+    print(f"Grafana dashboard UID: {monitoring['dashboard_uid']}")
+    print(f"Prometheus metric series: {monitoring['metric_series']}")
+    print(
+        "Grafana access: kubectl --namespace monitoring "
+        "port-forward service/namegen-monitoring-grafana 3000:80"
+    )
+    print("PASS: Terraform infrastructure deployment completed.")
+    print("PASS: Immutable application image deployment completed.")
+    print("PASS: Kubernetes workloads and encrypted storage are Ready.")
+    print("PASS: Public NLB application validation completed.")
+    print("PASS: MongoDB persistence validation completed.")
+    print("PASS: Prometheus and Grafana validation completed.")
+    print(
+        "NEXT: Capture the five required screenshots before teardown."
+    )
+
+
 def main():
     args = parse_arguments()
 
@@ -2264,6 +2350,14 @@ def main():
 
     if args.apply and not runtime_outputs:
         fail("Terraform apply completed without runtime outputs.")
+
+    if args.apply:
+        print_apply_summary(
+            runtime_outputs,
+            bucket,
+            git_sha,
+        )
+        return
 
     heading("Preview complete")
     print("PASS: Prerequisites and project files are available.")
