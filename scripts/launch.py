@@ -8,12 +8,14 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
+BOOTSTRAP_DIR = TERRAFORM_DIR / "bootstrap"
 KUBERNETES_DIR = PROJECT_ROOT / "k8s"
 MONITORING_DIR = PROJECT_ROOT / "monitoring"
 
@@ -52,6 +54,11 @@ REQUIRED_FILES = (
     "terraform/providers.tf",
     "terraform/variables.tf",
     "terraform/versions.tf",
+    "terraform/bootstrap/main.tf",
+    "terraform/bootstrap/outputs.tf",
+    "terraform/bootstrap/providers.tf",
+    "terraform/bootstrap/variables.tf",
+    "terraform/bootstrap/versions.tf",
     "terraform/modules/network/main.tf",
     "terraform/modules/ecr/main.tf",
     "terraform/modules/eks/main.tf",
@@ -609,6 +616,43 @@ def state_bucket_name(account_id, region):
     return f"namegen-terraform-state-{account_id}-{region}"
 
 
+def validate_state_bootstrap_configuration():
+    heading("Terraform state bootstrap validation")
+
+    run(
+        [
+            "terraform",
+            f"-chdir={BOOTSTRAP_DIR}",
+            "init",
+            "-backend=false",
+            "-input=false",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "terraform",
+            f"-chdir={BOOTSTRAP_DIR}",
+            "fmt",
+            "-check",
+            "-recursive",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "terraform",
+            f"-chdir={BOOTSTRAP_DIR}",
+            "validate",
+        ],
+        live=True,
+    )
+
+    print("PASS: Terraform state bootstrap configuration is valid.")
+
+
 def state_bucket_exists(bucket, region):
     result = run(
         [
@@ -624,6 +668,64 @@ def state_bucket_exists(bucket, region):
         allowed_codes=(0, 254, 255),
     )
     return result.returncode == 0
+
+
+def bootstrap_state_bucket(bucket, region):
+    heading("Terraform state bucket bootstrap")
+
+    with tempfile.NamedTemporaryFile(
+        prefix="namegen-bootstrap-",
+        suffix=".tfplan",
+        delete=False,
+    ) as plan_file:
+        plan_path = Path(plan_file.name)
+
+    plan_path.unlink()
+
+    try:
+        run(
+            [
+                "terraform",
+                f"-chdir={BOOTSTRAP_DIR}",
+                "plan",
+                "-input=false",
+                "-lock=false",
+                f"-var=aws_region={region}",
+                f"-out={plan_path}",
+            ],
+            live=True,
+        )
+
+        run(
+            [
+                "terraform",
+                f"-chdir={BOOTSTRAP_DIR}",
+                "apply",
+                "-input=false",
+                str(plan_path),
+            ],
+            live=True,
+        )
+
+        created_bucket = run(
+            [
+                "terraform",
+                f"-chdir={BOOTSTRAP_DIR}",
+                "output",
+                "-raw",
+                "state_bucket_name",
+            ]
+        ).stdout.strip()
+    finally:
+        plan_path.unlink(missing_ok=True)
+
+    if created_bucket != bucket:
+        fail(
+            "Terraform bootstrap returned an unexpected state bucket: "
+            f"{created_bucket or '<empty>'}"
+        )
+
+    print(f"PASS: Terraform state bucket created: {created_bucket}")
 
 
 def verify_state_bucket(bucket, region):
@@ -723,6 +825,23 @@ def verify_state_bucket(bucket, region):
         fail("Terraform state bucket is missing the NameGen project tag.")
 
     print("PASS: Project tag is present.")
+    return True
+
+
+def ensure_state_bucket(bucket, region, apply):
+    bucket_ready = verify_state_bucket(bucket, region)
+
+    if bucket_ready:
+        return True
+
+    if not apply:
+        return False
+
+    bootstrap_state_bucket(bucket, region)
+
+    if not verify_state_bucket(bucket, region):
+        fail("Terraform state bucket bootstrap did not complete.")
+
     return True
 
 
@@ -976,6 +1095,7 @@ def main():
 
     verify_tools()
     verify_project_files()
+    validate_state_bootstrap_configuration()
     verify_git_status()
     validate_kubernetes_manifests()
     validate_monitoring_configuration()
@@ -983,7 +1103,11 @@ def main():
     account_id = get_aws_identity(args.region)
     bucket = state_bucket_name(account_id, args.region)
 
-    bucket_ready = verify_state_bucket(bucket, args.region)
+    bucket_ready = ensure_state_bucket(
+        bucket,
+        args.region,
+        args.apply,
+    )
 
     github_oidc_provider_arn = verify_no_runtime_collisions(
         args.region
