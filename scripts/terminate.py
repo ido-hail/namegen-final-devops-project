@@ -116,9 +116,7 @@ def parse_arguments():
     )
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Preview and eventually remove the NameGen AWS deployment."
-        )
+        description="Preview or remove the NameGen AWS deployment."
     )
     parser.add_argument(
         "--region",
@@ -128,10 +126,7 @@ def parse_arguments():
     parser.add_argument(
         "--apply",
         action="store_true",
-        help=(
-            "Remove the NameGen deployment. Temporarily disabled until "
-            "all cleanup and post-destroy checks are implemented."
-        ),
+        help="Remove the NameGen deployment.",
     )
     parser.add_argument(
         "--yes",
@@ -896,16 +891,7 @@ def main():
     args = parse_arguments()
 
     print("NameGen termination foundation")
-    print(
-        "Mode: "
-        + ("DESTROY (currently disabled)" if args.apply else "PREVIEW")
-    )
-
-    if args.apply:
-        fail(
-            "Destroy mode is intentionally disabled until Kubernetes "
-            "cleanup and post-destroy validation are implemented."
-        )
+    print("Mode: " + ("DESTROY" if args.apply else "PREVIEW"))
 
     verify_tools()
     verify_project_files()

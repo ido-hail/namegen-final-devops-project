@@ -209,9 +209,7 @@ def parse_arguments():
     )
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Preview and eventually deploy the NameGen DevOps project."
-        )
+        description="Preview or deploy the NameGen DevOps project."
     )
     parser.add_argument(
         "--region",
@@ -221,10 +219,7 @@ def parse_arguments():
     parser.add_argument(
         "--apply",
         action="store_true",
-        help=(
-            "Create infrastructure and deploy NameGen. "
-            "Temporarily disabled until deployment stages are complete."
-        ),
+        help="Create infrastructure and deploy NameGen.",
     )
     parser.add_argument(
         "--yes",
@@ -2303,16 +2298,7 @@ def main():
     args = parse_arguments()
 
     print("NameGen launch foundation")
-    print(
-        "Mode: "
-        + ("APPLY (currently disabled)" if args.apply else "PREVIEW")
-    )
-
-    if args.apply:
-        fail(
-            "Apply mode is intentionally disabled until the Kubernetes, "
-            "monitoring and runtime-validation stages are implemented."
-        )
+    print("Mode: " + ("APPLY" if args.apply else "PREVIEW"))
 
     verify_tools()
     verify_project_files()
