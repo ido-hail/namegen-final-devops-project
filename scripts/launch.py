@@ -15,6 +15,7 @@ from urllib.parse import quote
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
 KUBERNETES_DIR = PROJECT_ROOT / "k8s"
+MONITORING_DIR = PROJECT_ROOT / "monitoring"
 
 PROJECT_TAG = "NameGen"
 CLUSTER_NAME = "namegen-eks"
@@ -23,6 +24,15 @@ STATE_KEY = "namegen/terraform.tfstate"
 KUBERNETES_NAMESPACE = "namegen"
 MONGODB_SECRET_NAME = "mongodb-credentials"
 IMAGE_PLACEHOLDER = "namegen-image:git-sha"
+
+MONITORING_NAMESPACE = "monitoring"
+MONITORING_RELEASE = "namegen-monitoring"
+MONITORING_CHART = "prometheus-community/kube-prometheus-stack"
+MONITORING_CHART_VERSION = "87.21.0"
+PROMETHEUS_HELM_REPOSITORY_URL = (
+    "https://prometheus-community.github.io/helm-charts"
+)
+GRAFANA_SECRET_NAME = "grafana-admin-credentials"
 
 REQUIRED_TOOLS = (
     "aws",
@@ -54,6 +64,9 @@ REQUIRED_FILES = (
     "k8s/mongodb-statefulset.yaml",
     "k8s/namegen-deployment.yaml",
     "k8s/namegen-service.yaml",
+    "monitoring/values.yaml",
+    "monitoring/kustomization.yaml",
+    "monitoring/namegen-dashboard-configmap.yaml",
 )
 
 
@@ -342,6 +355,210 @@ def apply_runtime_manifests(image_reference):
         ["kubectl", "apply", "--filename", "-"],
         rendered,
         "kubectl apply --filename - # rendered Kubernetes manifests",
+    )
+
+
+def validate_monitoring_configuration():
+    heading("Monitoring configuration validation")
+
+    chart = run(
+        [
+            "helm",
+            "template",
+            MONITORING_RELEASE,
+            MONITORING_CHART,
+            "--version",
+            MONITORING_CHART_VERSION,
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "--values",
+            str(MONITORING_DIR / "values.yaml"),
+        ],
+        cwd=PROJECT_ROOT,
+    ).stdout
+
+    required_chart_fragments = (
+        "kind: Prometheus",
+        "name: namegen-monitoring-grafana",
+        "name: namegen-monitoring-kube-state-metrics",
+        "name: namegen-monitoring-kube-pr-operator",
+        "uid: prometheus",
+    )
+
+    missing_chart_fragments = [
+        fragment
+        for fragment in required_chart_fragments
+        if fragment not in chart
+    ]
+
+    if missing_chart_fragments:
+        fail(
+            "Monitoring Helm render is missing required content: "
+            + ", ".join(missing_chart_fragments)
+        )
+
+    dashboard = run(
+        ["kubectl", "kustomize", str(MONITORING_DIR)],
+        cwd=PROJECT_ROOT,
+    ).stdout
+
+    required_dashboard_fragments = (
+        "kind: ConfigMap",
+        "name: namegen-grafana-dashboard",
+        "NameGen Kubernetes Runtime",
+        "Ready Pods",
+        "Pod Restarts",
+        "CPU Usage by Pod",
+        "Memory Usage by Pod",
+        "kube_pod_status_ready",
+        "kube_pod_container_status_restarts_total",
+        "container_cpu_usage_seconds_total",
+        "container_memory_working_set_bytes",
+    )
+
+    missing_dashboard_fragments = [
+        fragment
+        for fragment in required_dashboard_fragments
+        if fragment not in dashboard
+    ]
+
+    if missing_dashboard_fragments:
+        fail(
+            "Grafana dashboard render is missing required content: "
+            + ", ".join(missing_dashboard_fragments)
+        )
+
+    forbidden_fragments = (
+        "type: LoadBalancer",
+        "kind: Ingress",
+        "kind: PersistentVolumeClaim",
+    )
+
+    for label, rendered in (
+        ("Helm chart", chart),
+        ("dashboard", dashboard),
+    ):
+        found = [
+            fragment
+            for fragment in forbidden_fragments
+            if fragment in rendered
+        ]
+        if found:
+            fail(
+                f"Monitoring {label} contains forbidden public exposure "
+                f"or persistent storage: {', '.join(found)}"
+            )
+
+    if "kind: Secret" in dashboard:
+        fail("A monitoring Secret must not be stored in the repository.")
+
+    print(
+        f"PASS: kube-prometheus-stack {MONITORING_CHART_VERSION} "
+        "renders successfully."
+    )
+    print("PASS: The custom Grafana dashboard renders successfully.")
+    print("PASS: Monitoring remains internal and uses ephemeral storage.")
+    print("PASS: Grafana credentials are not stored in Git.")
+
+
+def build_grafana_secret_manifest():
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": GRAFANA_SECRET_NAME,
+            "namespace": MONITORING_NAMESPACE,
+        },
+        "type": "Opaque",
+        "stringData": {
+            "admin-user": "admin",
+            "admin-password": secrets.token_urlsafe(32),
+        },
+    }
+
+
+def apply_monitoring_stack():
+    heading("Monitoring deployment")
+
+    namespace_manifest = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": MONITORING_NAMESPACE,
+            "labels": {
+                "app.kubernetes.io/part-of": "namegen",
+            },
+        },
+    }
+
+    run_with_input(
+        ["kubectl", "apply", "--filename", "-"],
+        json.dumps(namespace_manifest),
+        "kubectl apply --filename - # monitoring Namespace",
+    )
+
+    grafana_secret = build_grafana_secret_manifest()
+    run_with_input(
+        ["kubectl", "apply", "--filename", "-"],
+        json.dumps(grafana_secret),
+        "kubectl apply --filename - # Grafana Secret redacted",
+    )
+
+    run(
+        [
+            "helm",
+            "repo",
+            "add",
+            "prometheus-community",
+            PROMETHEUS_HELM_REPOSITORY_URL,
+            "--force-update",
+        ],
+        live=True,
+    )
+
+    run(
+        ["helm", "repo", "update"],
+        live=True,
+    )
+
+    run(
+        [
+            "helm",
+            "upgrade",
+            "--install",
+            MONITORING_RELEASE,
+            MONITORING_CHART,
+            "--version",
+            MONITORING_CHART_VERSION,
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "--values",
+            str(MONITORING_DIR / "values.yaml"),
+            "--atomic",
+            "--wait",
+            "--wait-for-jobs",
+            "--timeout",
+            "15m",
+        ],
+        live=True,
+    )
+
+    dashboard = run(
+        ["kubectl", "kustomize", str(MONITORING_DIR)],
+        cwd=PROJECT_ROOT,
+    ).stdout
+
+    run_with_input(
+        ["kubectl", "apply", "--filename", "-"],
+        dashboard,
+        "kubectl apply --filename - # Grafana dashboard",
+    )
+
+    print("PASS: Prometheus and Grafana were deployed.")
+    print("PASS: The NameGen dashboard ConfigMap was applied.")
+    print(
+        "Grafana access: kubectl --namespace monitoring "
+        "port-forward service/namegen-monitoring-grafana 3000:80"
     )
 
 
@@ -715,6 +932,7 @@ def main():
     verify_project_files()
     verify_git_status()
     validate_kubernetes_manifests()
+    validate_monitoring_configuration()
 
     account_id = get_aws_identity(args.region)
     bucket = state_bucket_name(account_id, args.region)
@@ -736,6 +954,7 @@ def main():
     heading("Preview complete")
     print("PASS: Prerequisites and project files are available.")
     print("PASS: Kubernetes manifests rendered and passed policy checks.")
+    print("PASS: Monitoring configuration rendered and passed policy checks.")
     print("PASS: AWS identity and state bucket were validated.")
     print("PASS: No runtime resource collisions were found.")
     print("PASS: Terraform validation and plan completed.")
