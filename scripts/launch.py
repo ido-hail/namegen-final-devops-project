@@ -995,9 +995,133 @@ def apply_terraform_plan(plan_path):
     print("PASS: Saved Terraform plan applied successfully.")
 
 
+def read_runtime_outputs(expected_account_id, expected_region):
+    heading("Terraform runtime outputs")
+
+    result = run(
+        [
+            "terraform",
+            f"-chdir={TERRAFORM_DIR}",
+            "output",
+            "-json",
+        ]
+    )
+
+    raw_outputs = json.loads(result.stdout)
+    required_outputs = (
+        "aws_account_id",
+        "aws_region",
+        "ecr_repository_name",
+        "ecr_repository_url",
+        "eks_cluster_name",
+    )
+    missing_outputs = [
+        name for name in required_outputs if name not in raw_outputs
+    ]
+
+    if missing_outputs:
+        fail(
+            "Terraform did not return required outputs: "
+            + ", ".join(missing_outputs)
+        )
+
+    outputs = {
+        name: raw_outputs[name].get("value")
+        for name in required_outputs
+    }
+
+    if outputs["aws_account_id"] != expected_account_id:
+        fail("Terraform output AWS Account ID does not match STS identity.")
+
+    if outputs["aws_region"] != expected_region:
+        fail("Terraform output AWS Region does not match launch region.")
+
+    if outputs["ecr_repository_name"] != ECR_REPOSITORY:
+        fail("Terraform returned an unexpected ECR repository name.")
+
+    if outputs["eks_cluster_name"] != CLUSTER_NAME:
+        fail("Terraform returned an unexpected EKS cluster name.")
+
+    expected_ecr_prefix = (
+        f"{expected_account_id}.dkr.ecr.{expected_region}."
+    )
+    expected_ecr_suffix = f"/{ECR_REPOSITORY}"
+    ecr_repository_url = outputs["ecr_repository_url"] or ""
+
+    if not (
+        ecr_repository_url.startswith(expected_ecr_prefix)
+        and ecr_repository_url.endswith(expected_ecr_suffix)
+    ):
+        fail("Terraform returned an unexpected ECR repository URL.")
+
+    print(f"EKS cluster: {outputs['eks_cluster_name']}")
+    print(f"ECR repository: {outputs['ecr_repository_url']}")
+    print("PASS: Terraform runtime outputs match the launch identity.")
+    return outputs
+
+
+def configure_eks_access(cluster_name, region):
+    heading("EKS access configuration")
+
+    run(
+        [
+            "aws",
+            "eks",
+            "wait",
+            "cluster-active",
+            "--name",
+            cluster_name,
+            "--region",
+            region,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    cluster = aws_json(
+        [
+            "eks",
+            "describe-cluster",
+            "--name",
+            cluster_name,
+        ],
+        region,
+    ).get("cluster", {})
+
+    if cluster.get("status") != "ACTIVE":
+        fail("EKS cluster did not reach ACTIVE status.")
+
+    if not cluster.get("endpoint"):
+        fail("EKS cluster does not expose a Kubernetes API endpoint.")
+
+    run(
+        [
+            "aws",
+            "eks",
+            "update-kubeconfig",
+            "--name",
+            cluster_name,
+            "--region",
+            region,
+            "--alias",
+            cluster_name,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    ready = run(["kubectl", "get", "--raw=/readyz"])
+
+    if ready.stdout.strip() != "ok":
+        fail("Kubernetes API readiness endpoint did not return ok.")
+
+    print("PASS: EKS cluster is ACTIVE and Kubernetes API access works.")
+
+
 def terraform_preview(
     bucket,
     region,
+    expected_account_id,
     github_oidc_provider_arn,
     apply=False,
     skip_confirmation=False,
@@ -1077,6 +1201,7 @@ def terraform_preview(
         print("PASS: Terraform state contains no runtime resources.")
 
     heading("Terraform plan")
+    runtime_outputs = None
 
     with tempfile.NamedTemporaryFile(
         prefix="namegen-runtime-",
@@ -1175,10 +1300,19 @@ def terraform_preview(
         if apply:
             confirm_runtime_apply(skip_confirmation)
             apply_terraform_plan(plan_path)
+            runtime_outputs = read_runtime_outputs(
+                expected_account_id,
+                region,
+            )
+            configure_eks_access(
+                runtime_outputs["eks_cluster_name"],
+                region,
+            )
     finally:
         plan_path.unlink(missing_ok=True)
 
     print("PASS: Saved Terraform plan was removed.")
+    return runtime_outputs
 
 
 def main():
@@ -1224,13 +1358,17 @@ def main():
         print("No AWS resources were created.")
         return
 
-    terraform_preview(
+    runtime_outputs = terraform_preview(
         bucket,
         args.region,
+        account_id,
         github_oidc_provider_arn,
         apply=args.apply,
         skip_confirmation=args.yes,
     )
+
+    if args.apply and not runtime_outputs:
+        fail("Terraform apply completed without runtime outputs.")
 
     heading("Preview complete")
     print("PASS: Prerequisites and project files are available.")
