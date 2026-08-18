@@ -22,6 +22,7 @@ MONITORING_DIR = PROJECT_ROOT / "monitoring"
 PROJECT_TAG = "NameGen"
 CLUSTER_NAME = "namegen-eks"
 ECR_REPOSITORY = "namegen"
+DEPLOYMENT_BRANCH = "main"
 STATE_KEY = "namegen/terraform.tfstate"
 KUBERNETES_NAMESPACE = "namegen"
 MONGODB_SECRET_NAME = "mongodb-credentials"
@@ -569,7 +570,7 @@ def apply_monitoring_stack():
     )
 
 
-def verify_git_status():
+def verify_git_status(apply):
     heading("Git working tree")
 
     result = run(
@@ -577,9 +578,15 @@ def verify_git_status():
         cwd=PROJECT_ROOT,
     )
 
-    if result.stdout.strip():
+    working_tree_changes = result.stdout.strip()
+
+    if working_tree_changes and apply:
+        print(working_tree_changes)
+        fail("Apply mode requires a clean Git working tree.")
+
+    if working_tree_changes:
         print("WARNING: The working tree contains uncommitted changes.")
-        print(result.stdout.rstrip())
+        print(working_tree_changes)
     else:
         print("PASS: Working tree is clean.")
 
@@ -589,6 +596,39 @@ def verify_git_status():
     ).stdout.strip()
 
     print(f"Branch: {branch or 'detached HEAD'}")
+
+    if apply and branch != DEPLOYMENT_BRANCH:
+        fail(
+            f"Apply mode requires the {DEPLOYMENT_BRANCH} branch; "
+            f"current branch is {branch or 'detached HEAD'}."
+        )
+
+    git_sha = run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+    ).stdout.strip()
+
+    if not re.fullmatch(r"[0-9a-f]{40}", git_sha):
+        fail("Git HEAD is not a full 40-character commit SHA.")
+
+    if apply:
+        remote_sha = run(
+            [
+                "git",
+                "rev-parse",
+                f"origin/{DEPLOYMENT_BRANCH}",
+            ],
+            cwd=PROJECT_ROOT,
+        ).stdout.strip()
+
+        if remote_sha != git_sha:
+            fail(
+                "Local HEAD does not match the tracked deployment branch "
+                f"origin/{DEPLOYMENT_BRANCH}."
+            )
+
+    print(f"Git SHA: {git_sha}")
+    return git_sha
 
 
 def get_aws_identity(region):
@@ -1118,10 +1158,123 @@ def configure_eks_access(cluster_name, region):
     print("PASS: EKS cluster is ACTIVE and Kubernetes API access works.")
 
 
+def build_and_push_image(ecr_repository_url, region, git_sha):
+    heading("NameGen image build and ECR push")
+
+    if not re.fullmatch(r"[0-9a-f]{40}", git_sha):
+        fail("Image tag must be a full 40-character Git SHA.")
+
+    local_image = f"{ECR_REPOSITORY}:{git_sha}"
+    remote_image = f"{ecr_repository_url}:{git_sha}"
+
+    if remote_image.endswith(":latest"):
+        fail("Mutable latest image tags are not allowed.")
+
+    run(
+        [
+            "docker",
+            "buildx",
+            "build",
+            "--pull",
+            "--platform=linux/amd64",
+            "--load",
+            "--tag",
+            local_image,
+            ".",
+        ],
+        cwd=PROJECT_ROOT,
+        live=True,
+    )
+
+    image_details = json.loads(
+        run(["docker", "image", "inspect", local_image]).stdout
+    )[0]
+
+    if image_details.get("Architecture") != "amd64":
+        fail("The NameGen image was not built for linux/amd64.")
+
+    configured_user = image_details.get("Config", {}).get("User")
+
+    if configured_user != "node":
+        fail("The NameGen image is not configured to run as user node.")
+
+    runtime_identity = run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--platform=linux/amd64",
+            local_image,
+            "sh",
+            "-c",
+            'printf "%s:%s:%s" "$(id -u)" "$(id -g)" "$(id -un)"',
+        ]
+    ).stdout.strip()
+
+    if runtime_identity != "1000:1000:node":
+        fail(
+            "The NameGen container did not run as the expected "
+            f"non-root identity: {runtime_identity or '<empty>'}"
+        )
+
+    registry = ecr_repository_url.split("/", 1)[0]
+    login_password = run(
+        [
+            "aws",
+            "ecr",
+            "get-login-password",
+            "--region",
+            region,
+            "--no-cli-pager",
+        ]
+    ).stdout
+
+    if not login_password.strip():
+        fail("AWS CLI did not return an ECR login password.")
+
+    run_with_input(
+        [
+            "docker",
+            "login",
+            "--username",
+            "AWS",
+            "--password-stdin",
+            registry,
+        ],
+        login_password,
+        f"docker login --username AWS --password-stdin {registry} "
+        "# password redacted",
+    )
+
+    run(["docker", "tag", local_image, remote_image])
+    run(["docker", "push", remote_image], live=True)
+
+    image_details = aws_json(
+        [
+            "ecr",
+            "describe-images",
+            "--repository-name",
+            ECR_REPOSITORY,
+            "--image-ids",
+            f"imageTag={git_sha}",
+        ],
+        region,
+    ).get("imageDetails", [])
+
+    if len(image_details) != 1 or not image_details[0].get("imageDigest"):
+        fail("ECR did not return exactly one image digest for the Git SHA.")
+
+    print(f"Image: {remote_image}")
+    print(f"Digest: {image_details[0]['imageDigest']}")
+    print("PASS: linux/amd64 non-root image was pushed to ECR.")
+    return remote_image
+
+
 def terraform_preview(
     bucket,
     region,
     expected_account_id,
+    git_sha,
     github_oidc_provider_arn,
     apply=False,
     skip_confirmation=False,
@@ -1308,6 +1461,11 @@ def terraform_preview(
                 runtime_outputs["eks_cluster_name"],
                 region,
             )
+            runtime_outputs["image_reference"] = build_and_push_image(
+                runtime_outputs["ecr_repository_url"],
+                region,
+                git_sha,
+            )
     finally:
         plan_path.unlink(missing_ok=True)
 
@@ -1333,7 +1491,7 @@ def main():
     verify_tools()
     verify_project_files()
     validate_state_bootstrap_configuration()
-    verify_git_status()
+    git_sha = verify_git_status(args.apply)
     validate_kubernetes_manifests()
     validate_monitoring_configuration()
 
@@ -1362,6 +1520,7 @@ def main():
         bucket,
         args.region,
         account_id,
+        git_sha,
         github_oidc_provider_arn,
         apply=args.apply,
         skip_confirmation=args.yes,
