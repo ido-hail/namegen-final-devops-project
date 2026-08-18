@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: namegen
+  labels:
+    app.kubernetes.io/name: namegen
+    app.kubernetes.io/part-of: namegen
