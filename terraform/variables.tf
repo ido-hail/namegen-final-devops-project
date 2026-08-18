@@ -56,3 +56,40 @@ variable "eks_public_access_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "github_owner" {
+  description = "GitHub account that owns the deployment repository."
+  type        = string
+  default     = "ido-hail"
+}
+
+variable "github_owner_id" {
+  description = "Immutable numeric ID of the GitHub repository owner."
+  type        = string
+  default     = "262130795"
+}
+
+variable "github_repository" {
+  description = "GitHub repository allowed to assume the deployment role."
+  type        = string
+  default     = "namegen-final-devops-project"
+}
+
+variable "github_repository_id" {
+  description = "Immutable numeric ID of the GitHub repository."
+  type        = string
+  default     = "1338080701"
+}
+
+variable "github_branch" {
+  description = "GitHub branch allowed to assume the deployment role."
+  type        = string
+  default     = "main"
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Existing GitHub OIDC provider ARN, or null to create one."
+  type        = string
+  default     = null
+  nullable    = true
+}

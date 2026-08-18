@@ -57,3 +57,23 @@ output "eks_node_role_arn" {
   description = "ARN of the EKS Auto Mode node role."
   value       = module.eks.node_role_arn
 }
+
+output "github_actions_role_name" {
+  description = "Name of the IAM role assumed by GitHub Actions."
+  value       = module.github_oidc.role_name
+}
+
+output "github_actions_role_arn" {
+  description = "ARN of the IAM role assumed by GitHub Actions."
+  value       = module.github_oidc.role_arn
+}
+
+output "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC provider."
+  value       = module.github_oidc.oidc_provider_arn
+}
+
+output "github_oidc_subject" {
+  description = "Exact GitHub OIDC subject trusted by AWS."
+  value       = module.github_oidc.oidc_subject
+}

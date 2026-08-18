@@ -40,3 +40,19 @@ module "eks" {
   public_access_cidrs = var.eks_public_access_cidrs
   aws_partition       = data.aws_partition.current.partition
 }
+
+locals {
+  github_oidc_subject = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:ref:refs/heads/${var.github_branch}"
+}
+
+module "github_oidc" {
+  source = "./modules/github_oidc"
+
+  role_name                  = "${var.project_name}-github-actions-role"
+  github_oidc_subject        = local.github_oidc_subject
+  existing_oidc_provider_arn = var.github_oidc_provider_arn
+  ecr_repository_arn         = module.ecr.repository_arn
+  eks_cluster_name           = module.eks.cluster_name
+  eks_cluster_arn            = module.eks.cluster_arn
+  aws_partition              = data.aws_partition.current.partition
+}
