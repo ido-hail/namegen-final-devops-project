@@ -9,6 +9,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
@@ -172,6 +175,26 @@ def kubectl_json(arguments):
     result = run(["kubectl", *arguments, "--output=json"])
     output = result.stdout.strip()
     return json.loads(output) if output else {}
+
+
+def http_request(url, method="GET", payload=None):
+    data = None
+    headers = {"User-Agent": "namegen-launch-validation"}
+
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method=method,
+    )
+
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = response.read().decode("utf-8")
+        return response.status, body
 
 
 def parse_arguments():
@@ -536,6 +559,201 @@ def validate_runtime_workloads(image_reference, region):
     print("PASS: MongoDB 3.6 has exactly one Ready replica.")
     print(f"PASS: PVC is Bound to encrypted gp3 volume {volume_id}.")
     return volume_id
+
+
+def wait_for_nlb_hostname():
+    heading("Public NLB discovery")
+    attempts = 40
+
+    for attempt in range(1, attempts + 1):
+        service = kubectl_json(
+            [
+                "--namespace",
+                KUBERNETES_NAMESPACE,
+                "get",
+                "service",
+                "namegen",
+            ]
+        )
+        ingress = service.get("status", {}).get(
+            "loadBalancer", {}
+        ).get("ingress", [])
+        hostname = ingress[0].get("hostname") if ingress else None
+
+        if hostname:
+            if not re.fullmatch(
+                r"[A-Za-z0-9.-]+\.elb\.[a-z0-9-]+"
+                r"\.amazonaws\.com(?:\.cn)?",
+                hostname,
+            ):
+                fail("Kubernetes returned an unexpected NLB hostname.")
+
+            print(f"NLB hostname: {hostname}")
+            return hostname
+
+        print(
+            "Waiting for the NLB hostname "
+            f"({attempt}/{attempts})..."
+        )
+        time.sleep(15)
+
+    fail("Kubernetes Service did not receive an NLB hostname.")
+
+
+def validate_aws_nlb(hostname, region):
+    load_balancers = aws_json(
+        ["elbv2", "describe-load-balancers"],
+        region,
+    ).get("LoadBalancers", [])
+    matches = [
+        load_balancer
+        for load_balancer in load_balancers
+        if load_balancer.get("DNSName") == hostname
+    ]
+
+    if len(matches) != 1:
+        fail("AWS did not return exactly one Load Balancer for the Service.")
+
+    load_balancer = matches[0]
+
+    if load_balancer.get("Type") != "network":
+        fail("The public NameGen Load Balancer is not an NLB.")
+
+    if load_balancer.get("Scheme") != "internet-facing":
+        fail("The NameGen NLB is not internet-facing.")
+
+    load_balancer_arn = load_balancer.get("LoadBalancerArn")
+
+    if not load_balancer_arn:
+        fail("The NameGen NLB does not have an ARN.")
+
+    run(
+        [
+            "aws",
+            "elbv2",
+            "wait",
+            "load-balancer-available",
+            "--load-balancer-arns",
+            load_balancer_arn,
+            "--region",
+            region,
+            "--no-cli-pager",
+        ],
+        live=True,
+    )
+
+    refreshed = aws_json(
+        [
+            "elbv2",
+            "describe-load-balancers",
+            "--load-balancer-arns",
+            load_balancer_arn,
+        ],
+        region,
+    ).get("LoadBalancers", [])
+
+    if (
+        len(refreshed) != 1
+        or refreshed[0].get("State", {}).get("Code") != "active"
+    ):
+        fail("The NameGen NLB did not reach active state.")
+
+    print(f"NLB ARN: {load_balancer_arn}")
+    print("PASS: AWS confirms an active internet-facing Network LB.")
+
+
+def wait_for_public_application(base_url):
+    attempts = 40
+    last_error = "no response"
+
+    for attempt in range(1, attempts + 1):
+        try:
+            status, body = http_request(f"{base_url}/api/connection")
+            connection = json.loads(body)
+
+            if status == 200 and connection.get("connectionInfo"):
+                print(
+                    "PASS: Public NLB reached the NameGen "
+                    "database readiness endpoint."
+                )
+                return connection
+
+            last_error = f"HTTP {status} without connectionInfo"
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+        ) as error:
+            last_error = str(error)
+
+        print(
+            "Waiting for the public NameGen endpoint "
+            f"({attempt}/{attempts}): {last_error}"
+        )
+        time.sleep(15)
+
+    fail(f"Public NameGen endpoint did not become ready: {last_error}")
+
+
+def validate_public_application(hostname, region):
+    heading("Public application validation")
+    validate_aws_nlb(hostname, region)
+    base_url = f"http://{hostname}"
+    connection = wait_for_public_application(base_url)
+    connection_info = connection.get("connectionInfo", {})
+
+    if connection_info != {
+        "host": "mongodb",
+        "port": 27017,
+        "name": "namegen",
+    }:
+        fail("Public connection endpoint returned unexpected MongoDB data.")
+
+    ui_status, ui_body = http_request(f"{base_url}/")
+
+    if ui_status != 200 or "Random Name Generator and Saver" not in ui_body:
+        fail("The public NameGen UI did not return the expected page.")
+
+    random_status, random_body = http_request(
+        f"{base_url}/api/random_name"
+    )
+    random_name = json.loads(random_body)
+
+    if (
+        random_status != 200
+        or not random_name.get("firstName")
+        or not random_name.get("lastName")
+    ):
+        fail("The public random-name endpoint returned invalid data.")
+
+    save_status, save_body = http_request(
+        f"{base_url}/api/names",
+        method="POST",
+        payload=random_name,
+    )
+    save_result = json.loads(save_body)
+
+    if save_status != 200 or save_result.get("status") != 200:
+        fail("The generated name could not be saved through the public NLB.")
+
+    list_status, list_body = http_request(f"{base_url}/api/names")
+    stored_names = json.loads(list_body)
+
+    if list_status != 200 or not isinstance(stored_names, list):
+        fail("The public names endpoint did not return a list.")
+
+    if not any(
+        person.get("firstName") == random_name["firstName"]
+        and person.get("lastName") == random_name["lastName"]
+        for person in stored_names
+    ):
+        fail("The saved random name was not returned from MongoDB.")
+
+    print(f"Public URL: {base_url}")
+    print("PASS: NameGen UI is publicly reachable through the NLB.")
+    print("PASS: App-to-MongoDB connection details are correct.")
+    print("PASS: Random name generation, save and list succeeded.")
+    return base_url
 
 
 def validate_monitoring_configuration():
@@ -1641,6 +1859,11 @@ def terraform_preview(
             apply_runtime_manifests(runtime_outputs["image_reference"])
             runtime_outputs["ebs_volume_id"] = validate_runtime_workloads(
                 runtime_outputs["image_reference"],
+                region,
+            )
+            nlb_hostname = wait_for_nlb_hostname()
+            runtime_outputs["public_url"] = validate_public_application(
+                nlb_hostname,
                 region,
             )
     finally:
