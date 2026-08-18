@@ -4,19 +4,25 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
+KUBERNETES_DIR = PROJECT_ROOT / "k8s"
 
 PROJECT_TAG = "NameGen"
 CLUSTER_NAME = "namegen-eks"
 ECR_REPOSITORY = "namegen"
 STATE_KEY = "namegen/terraform.tfstate"
+KUBERNETES_NAMESPACE = "namegen"
+MONGODB_SECRET_NAME = "mongodb-credentials"
+IMAGE_PLACEHOLDER = "namegen-image:git-sha"
 
 REQUIRED_TOOLS = (
     "aws",
@@ -40,6 +46,14 @@ REQUIRED_FILES = (
     "terraform/modules/ecr/main.tf",
     "terraform/modules/eks/main.tf",
     "terraform/modules/github_oidc/main.tf",
+    "k8s/kustomization.yaml",
+    "k8s/namespace.yaml",
+    "k8s/storage-class.yaml",
+    "k8s/mongodb-init-configmap.yaml",
+    "k8s/mongodb-service.yaml",
+    "k8s/mongodb-statefulset.yaml",
+    "k8s/namegen-deployment.yaml",
+    "k8s/namegen-service.yaml",
 )
 
 
@@ -83,6 +97,35 @@ def run(command, cwd=None, allowed_codes=(0,), live=False):
             f"Command failed with exit code {result.returncode}: "
             f"{command_text}"
         )
+
+    return result
+
+
+def run_with_input(command, input_text, display_command):
+    print(f"+ {display_command}")
+
+    result = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        text=True,
+        input=input_text,
+        check=False,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        if result.stdout:
+            print(result.stdout.rstrip())
+        if result.stderr:
+            print(result.stderr.rstrip(), file=sys.stderr)
+
+        fail(
+            f"Command failed with exit code {result.returncode}: "
+            f"{display_command}"
+        )
+
+    if result.stdout:
+        print(result.stdout.rstrip())
 
     return result
 
@@ -169,6 +212,137 @@ def verify_project_files():
 
     if missing:
         fail(f"Missing required project files: {', '.join(missing)}")
+
+
+def render_kubernetes_manifests(image_reference=None):
+    result = run(
+        ["kubectl", "kustomize", str(KUBERNETES_DIR)],
+        cwd=PROJECT_ROOT,
+    )
+    rendered = result.stdout
+
+    placeholder_count = rendered.count(IMAGE_PLACEHOLDER)
+    if placeholder_count != 1:
+        fail(
+            "Expected exactly one NameGen image placeholder in the "
+            f"Kubernetes render; found {placeholder_count}."
+        )
+
+    if image_reference is None:
+        return rendered
+
+    if re.search(r"\s", image_reference):
+        fail("The runtime image reference contains whitespace.")
+
+    if not re.search(r":[0-9a-f]{40}$", image_reference):
+        fail("The runtime image must use a full 40-character Git SHA tag.")
+
+    return rendered.replace(IMAGE_PLACEHOLDER, image_reference, 1)
+
+
+def validate_kubernetes_manifests():
+    heading("Kubernetes manifest validation")
+
+    rendered = render_kubernetes_manifests()
+
+    required_fragments = (
+        "kind: Namespace",
+        "kind: StorageClass",
+        "kind: StatefulSet",
+        "kind: Deployment",
+        "kind: Service",
+        "replicas: 2",
+        "image: mongo:3.6",
+        "storageClassName: namegen-gp3",
+        "loadBalancerClass: eks.amazonaws.com/nlb",
+        "service.beta.kubernetes.io/aws-load-balancer-scheme: "
+        "internet-facing",
+    )
+
+    missing = [
+        fragment for fragment in required_fragments
+        if fragment not in rendered
+    ]
+    if missing:
+        fail(
+            "Kubernetes render is missing required content: "
+            + ", ".join(missing)
+        )
+
+    if "kind: Secret" in rendered:
+        fail("A Kubernetes Secret must not be stored in the repository.")
+
+    if re.search(r"image:\s*\S+:latest(?:\s|$)", rendered):
+        fail("A mutable latest image tag was found in Kubernetes manifests.")
+
+    if re.search(r"\b\d{12}\b", rendered):
+        fail("A hardcoded 12-digit account identifier was found in Kubernetes.")
+
+    if rendered.count(f"name: {MONGODB_SECRET_NAME}") != 5:
+        fail(
+            "Expected five MongoDB Secret references across the workloads."
+        )
+
+    print("PASS: Kubernetes manifests render successfully.")
+    print("PASS: MongoDB Secret values are not stored in Git.")
+    print("PASS: The NameGen image placeholder occurs exactly once.")
+
+
+def build_mongodb_secret_manifest():
+    root_username = "root"
+    app_username = "genuser"
+    root_password = secrets.token_urlsafe(32)
+    app_password = secrets.token_urlsafe(32)
+
+    mongodb_url = (
+        "mongodb://"
+        f"{quote(app_username, safe='')}:"
+        f"{quote(app_password, safe='')}"
+        "@mongodb:27017/namegen"
+    )
+
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": MONGODB_SECRET_NAME,
+            "namespace": KUBERNETES_NAMESPACE,
+        },
+        "type": "Opaque",
+        "stringData": {
+            "MONGO_INITDB_ROOT_USERNAME": root_username,
+            "MONGO_INITDB_ROOT_PASSWORD": root_password,
+            "MONGO_APP_USERNAME": app_username,
+            "MONGO_APP_PASSWORD": app_password,
+            "MONGODB_URL": mongodb_url,
+        },
+    }
+
+
+def apply_runtime_manifests(image_reference):
+    run(
+        [
+            "kubectl",
+            "apply",
+            "--filename",
+            str(KUBERNETES_DIR / "namespace.yaml"),
+        ],
+        live=True,
+    )
+
+    secret_manifest = build_mongodb_secret_manifest()
+    run_with_input(
+        ["kubectl", "apply", "--filename", "-"],
+        json.dumps(secret_manifest),
+        "kubectl apply --filename - # MongoDB Secret redacted",
+    )
+
+    rendered = render_kubernetes_manifests(image_reference)
+    run_with_input(
+        ["kubectl", "apply", "--filename", "-"],
+        rendered,
+        "kubectl apply --filename - # rendered Kubernetes manifests",
+    )
 
 
 def verify_git_status():
@@ -540,6 +714,7 @@ def main():
     verify_tools()
     verify_project_files()
     verify_git_status()
+    validate_kubernetes_manifests()
 
     account_id = get_aws_identity(args.region)
     bucket = state_bucket_name(account_id, args.region)
@@ -560,6 +735,7 @@ def main():
 
     heading("Preview complete")
     print("PASS: Prerequisites and project files are available.")
+    print("PASS: Kubernetes manifests rendered and passed policy checks.")
     print("PASS: AWS identity and state bucket were validated.")
     print("PASS: No runtime resource collisions were found.")
     print("PASS: Terraform validation and plan completed.")
