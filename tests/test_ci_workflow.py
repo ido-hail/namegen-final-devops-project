@@ -19,7 +19,13 @@ class DeploymentWorkflowTests(unittest.TestCase):
     def test_uses_oidc_without_static_aws_credentials(self):
         self.assertIn("id-token: write", self.workflow)
         self.assertIn("role-to-assume: ${{ env.AWS_ROLE_ARN }}", self.workflow)
-        self.assertNotIn("${{ secrets.", self.workflow)
+        secret_references = set(
+            re.findall(r"\$\{\{ secrets\.([A-Z0-9_]+) \}\}", self.workflow)
+        )
+        self.assertEqual(
+            secret_references,
+            {"AWS_ACCOUNT_ID", "AWS_ROLE_ARN"},
+        )
         self.assertNotIn("aws-access-key-id", self.workflow)
         self.assertNotIn("aws-secret-access-key", self.workflow)
 
