@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+  <title id="title">NameGen deployment architecture on Amazon EKS Auto Mode</title>
+  <desc id="desc">Local lifecycle automation and GitHub Actions deploy an immutable NameGen image to an EKS Auto Mode cluster. A public Network Load Balancer routes traffic to two application Pods. MongoDB uses encrypted gp3 storage, and internal Prometheus and Grafana provide monitoring.</desc>
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2ff"/>
+    </linearGradient>
+    <linearGradient id="aws" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset="1" stop-color="#fff7ed"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 34px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 17px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .section { font: 700 19px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .label { font: 700 16px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 14px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .small { font: 500 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .pill { font: 700 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 16; filter: url(#shadow); }
+      .line { fill: none; stroke: #475569; stroke-width: 2.5; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #64748b; stroke-width: 2; stroke-dasharray: 8 7; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1050" fill="url(#page)"/>
+  <text x="60" y="58" class="title">NameGen on Amazon EKS Auto Mode</text>
+  <text x="60" y="88" class="subtitle">Immutable delivery, persistent MongoDB, internal monitoring, and a fully automated create-to-cleanup lifecycle</text>
+
+  <rect x="40" y="125" width="330" height="845" rx="24" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+  <text x="68" y="165" class="section">Delivery &amp; lifecycle</text>
+
+  <rect x="70" y="200" width="270" height="150" class="card"/>
+  <circle cx="108" cy="241" r="20" fill="#2563eb"/>
+  <path d="M99 241h18M108 232v18" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text x="140" y="237" class="label">Local operator</text>
+  <text x="140" y="260" class="body">AWS CLI credentials</text>
+  <text x="92" y="296" class="body">scripts/launch.py</text>
+  <text x="92" y="319" class="body">scripts/terminate.py</text>
+  <text x="92" y="339" class="small">Preview by default; explicit Apply/Destroy</text>
+
+  <rect x="70" y="390" width="270" height="175" class="card"/>
+  <circle cx="108" cy="431" r="20" fill="#111827"/>
+  <path d="M100 430c0-7 5-12 12-12s12 5 12 12c0 6-4 10-9 12v8h-7v-8c-5-2-8-6-8-12z" fill="#fff"/>
+  <text x="140" y="426" class="label">GitHub Actions</text>
+  <text x="140" y="449" class="body">main branch only</text>
+  <text x="92" y="486" class="body">Test → Build → Push → Deploy</text>
+  <text x="92" y="511" class="body">OIDC short-lived AWS session</text>
+  <text x="92" y="536" class="body">Namespace-scoped Kubernetes RBAC</text>
+
+  <rect x="70" y="610" width="270" height="205" class="card"/>
+  <text x="92" y="648" class="label">Lifecycle guarantees</text>
+  <circle cx="95" cy="683" r="5" fill="#16a34a"/>
+  <text x="110" y="688" class="body">Saved, reviewed Terraform plans</text>
+  <circle cx="95" cy="718" r="5" fill="#16a34a"/>
+  <text x="110" y="723" class="body">Runtime and persistence checks</text>
+  <circle cx="95" cy="753" r="5" fill="#16a34a"/>
+  <text x="110" y="758" class="body">No committed runtime Secrets</text>
+  <circle cx="95" cy="788" r="5" fill="#16a34a"/>
+  <text x="110" y="793" class="body">State bucket deleted last</text>
+
+  <rect x="410" y="125" width="1150" height="845" rx="24" fill="url(#aws)" stroke="#f59e0b" stroke-width="2.5"/>
+  <text x="440" y="165" class="section">AWS · us-east-1</text>
+  <rect x="1392" y="141" width="132" height="30" rx="15" fill="#f59e0b"/>
+  <text x="1458" y="161" text-anchor="middle" class="pill">Terraform-managed</text>
+
+  <rect x="450" y="195" width="300" height="115" class="card"/>
+  <rect x="470" y="215" width="48" height="48" rx="10" fill="#7c3aed"/>
+  <path d="M482 231h24M482 240h24M482 249h16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text x="535" y="231" class="label">Amazon S3</text>
+  <text x="535" y="254" class="body">Versioned remote tfstate</text>
+  <text x="470" y="290" class="small">AES-256 · public access blocked · removed last</text>
+
+  <rect x="790" y="195" width="300" height="115" class="card"/>
+  <rect x="810" y="215" width="48" height="48" rx="10" fill="#dc2626"/>
+  <path d="M823 239l8 8 15-18" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="875" y="231" class="label">IAM + GitHub OIDC</text>
+  <text x="875" y="254" class="body">Exact repository / main trust</text>
+  <text x="810" y="282" class="small">ECR push + EKS discovery</text>
+  <text x="810" y="299" class="small">No static AWS access keys</text>
+
+  <rect x="1130" y="195" width="390" height="115" class="card"/>
+  <rect x="1150" y="215" width="48" height="48" rx="10" fill="#ea580c"/>
+  <path d="M1161 228h26v22h-26zM1168 222h12v6" fill="none" stroke="#fff" stroke-width="3"/>
+  <text x="1215" y="231" class="label">Amazon ECR</text>
+  <text x="1215" y="254" class="body">Private immutable repository</text>
+  <text x="1150" y="290" class="small">linux/amd64 · full 40-character Git SHA · scan on push</text>
+
+  <path d="M340 275 H425 Q440 275 450 265" class="line"/>
+  <path d="M340 475 H765 Q780 475 790 300" class="line"/>
+  <path d="M1090 252 H1130" class="line"/>
+
+  <rect x="450" y="350" width="1070" height="570" rx="22" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="480" y="388" class="section">VPC 10.0.0.0/16 · EKS Auto Mode · Kubernetes 1.35</text>
+  <rect x="1250" y="368" width="235" height="28" rx="14" fill="#15803d"/>
+  <text x="1368" y="387" text-anchor="middle" class="pill">2 public subnets · no NAT/EIP</text>
+
+  <rect x="480" y="420" width="480" height="220" rx="18" fill="#ecfeff" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="505" y="452" class="label">Public entry and application</text>
+
+  <rect x="505" y="480" width="120" height="75" class="card"/>
+  <text x="565" y="509" text-anchor="middle" class="label">Internet</text>
+  <text x="565" y="533" text-anchor="middle" class="small">HTTP :80</text>
+
+  <rect x="665" y="480" width="125" height="75" class="card"/>
+  <text x="728" y="509" text-anchor="middle" class="label">Public NLB</text>
+  <text x="728" y="533" text-anchor="middle" class="small">IP targets</text>
+
+  <rect x="830" y="480" width="105" height="75" class="card"/>
+  <text x="883" y="509" text-anchor="middle" class="label">Service</text>
+  <text x="883" y="533" text-anchor="middle" class="small">namegen</text>
+
+  <path d="M625 517 H665" class="line"/>
+  <path d="M790 517 H830" class="line"/>
+
+  <rect x="535" y="580" width="180" height="38" rx="12" fill="#2563eb"/>
+  <text x="625" y="604" text-anchor="middle" class="pill">Subnet · AZ 1a</text>
+  <rect x="730" y="580" width="180" height="38" rx="12" fill="#2563eb"/>
+  <text x="820" y="604" text-anchor="middle" class="pill">Subnet · AZ 1b</text>
+  <rect x="550" y="650" width="165" height="92" class="card"/>
+  <text x="633" y="681" text-anchor="middle" class="label">NameGen Pod</text>
+  <text x="633" y="705" text-anchor="middle" class="body">Node.js 24 · :8080</text>
+  <text x="633" y="727" text-anchor="middle" class="small">UID/GID 1000</text>
+  <rect x="730" y="650" width="165" height="92" class="card"/>
+  <text x="813" y="681" text-anchor="middle" class="label">NameGen Pod</text>
+  <text x="813" y="705" text-anchor="middle" class="body">Node.js 24 · :8080</text>
+  <text x="813" y="727" text-anchor="middle" class="small">UID/GID 1000</text>
+  <path d="M883 555 V625 H812 V650" class="line"/>
+  <path d="M812 625 H632 V650" class="line"/>
+
+  <rect x="995" y="420" width="495" height="322" rx="18" fill="#fdf4ff" stroke="#d946ef" stroke-width="1.5"/>
+  <text x="1020" y="452" class="label">Persistent database</text>
+  <rect x="1020" y="480" width="130" height="75" class="card"/>
+  <text x="1085" y="509" text-anchor="middle" class="label">Service</text>
+  <text x="1085" y="533" text-anchor="middle" class="small">mongodb :27017</text>
+  <rect x="1190" y="480" width="265" height="75" class="card"/>
+  <text x="1323" y="508" text-anchor="middle" class="label">MongoDB StatefulSet</text>
+  <text x="1323" y="533" text-anchor="middle" class="body">1 replica · MongoDB 3.6 · auth</text>
+  <path d="M1150 517 H1190" class="line"/>
+  <path d="M895 696 H955 Q975 696 985 670 L1020 555" class="line"/>
+
+  <rect x="1050" y="595" width="170" height="90" class="card"/>
+  <text x="1135" y="626" text-anchor="middle" class="label">PVC</text>
+  <text x="1135" y="650" text-anchor="middle" class="body">mongodb-data</text>
+  <text x="1135" y="672" text-anchor="middle" class="small">Bound · 1 GiB</text>
+  <rect x="1260" y="595" width="195" height="90" class="card"/>
+  <text x="1358" y="626" text-anchor="middle" class="label">Amazon EBS</text>
+  <text x="1358" y="650" text-anchor="middle" class="body">gp3 · encrypted</text>
+  <text x="1358" y="672" text-anchor="middle" class="small">EKS Auto Mode CSI</text>
+  <path d="M1323 555 V575 H1135 V595" class="line"/>
+  <path d="M1220 640 H1260" class="line"/>
+
+  <rect x="480" y="790" width="1010" height="100" rx="18" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="505" y="824" class="label">Internal observability</text>
+  <text x="505" y="851" class="body">Prometheus Operator + Prometheus + kube-state-metrics</text>
+  <text x="505" y="875" class="small">Pinned kube-prometheus-stack 87.21.0 · ephemeral storage</text>
+  <rect x="1060" y="812" width="185" height="55" class="card"/>
+  <text x="1153" y="836" text-anchor="middle" class="label">Prometheus</text>
+  <text x="1153" y="856" text-anchor="middle" class="small">ClusterIP</text>
+  <rect x="1280" y="812" width="180" height="55" class="card"/>
+  <text x="1370" y="836" text-anchor="middle" class="label">Grafana</text>
+  <text x="1370" y="856" text-anchor="middle" class="small">ClusterIP · port-forward</text>
+  <path d="M985 790 V765 H813 V742" class="dash"/>
+  <path d="M1245 840 H1280" class="line"/>
+
+  <text x="450" y="950" class="small">Only the NameGen Network Load Balancer is public. Monitoring and MongoDB remain internal to the cluster.</text>
+</svg>
