@@ -44,8 +44,9 @@ evidence, a Git audit, and a concise handoff.
   SHA image, update only the intended manifests, then validate each layer.
 - Persistence validation may recreate only the `mongodb-0` Pod. It must retain
   the same PVC and PersistentVolume.
-- Teardown must use `scripts/terminate.py` only after explicit approval and must
-  preserve or remove the state bucket according to the final documented policy.
+- Teardown must use `scripts/terminate.py` only after explicit approval. The
+  final policy is to remove the versioned Terraform state bucket last, after
+  the runtime, Terraform state, and external-resource audits have passed.
 
 ## Required validation
 

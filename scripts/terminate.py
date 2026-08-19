@@ -51,8 +51,16 @@ def heading(title):
     print(f"\n== {title} ==")
 
 
-def run(command, cwd=None, allowed_codes=(0,), live=False):
-    command_text = " ".join(str(part) for part in command)
+def run(
+    command,
+    cwd=None,
+    allowed_codes=(0,),
+    live=False,
+    display_command=None,
+):
+    command_text = display_command or " ".join(
+        str(part) for part in command
+    )
     print(f"+ {command_text}")
 
     if live:
@@ -86,7 +94,7 @@ def run(command, cwd=None, allowed_codes=(0,), live=False):
     return result
 
 
-def aws_json(arguments, region):
+def aws_json(arguments, region, display_command=None):
     result = run(
         [
             "aws",
@@ -96,7 +104,8 @@ def aws_json(arguments, region):
             "--output",
             "json",
             "--no-cli-pager",
-        ]
+        ],
+        display_command=display_command,
     )
     output = result.stdout.strip()
     return json.loads(output) if output else {}
@@ -268,7 +277,7 @@ def verify_state_bucket(bucket, region):
         return False
 
     print("PASS: State bucket exists and is accessible.")
-    print("PASS: State bucket is intentionally excluded from teardown.")
+    print("PASS: State bucket will be deleted last during Apply teardown.")
     return True
 
 
@@ -712,8 +721,8 @@ def confirm_destroy(skip_confirmation):
         return
 
     print(
-        "NameGen runtime resources will be permanently removed. "
-        "The Terraform state bucket will be retained."
+        "NameGen runtime resources and the Terraform state bucket "
+        "will be permanently removed."
     )
     confirmation = input("Type DESTROY to continue: ").strip()
 
@@ -835,7 +844,87 @@ def validate_post_destroy(
     print("PASS: EKS, ECR, VPC and NameGen IAM roles are absent.")
     print("PASS: NameGen NLB, EBS volume and EC2 instances are absent.")
     print("PASS: GitHub OIDC provider ownership was respected.")
-    print(f"PASS: Terraform state bucket was retained: {bucket}")
+    print("PASS: Terraform state bucket is ready for final cleanup.")
+
+
+def delete_state_bucket(bucket, region):
+    heading("Terraform state bucket cleanup")
+
+    if not state_bucket_exists(bucket, region):
+        print("PASS: Terraform state bucket is already absent.")
+        return 0
+
+    deleted_objects = 0
+
+    while True:
+        inventory = aws_json(
+            [
+                "s3api",
+                "list-object-versions",
+                "--bucket",
+                bucket,
+            ],
+            region,
+        )
+        objects = [
+            {
+                "Key": item["Key"],
+                "VersionId": item["VersionId"],
+            }
+            for collection in ("Versions", "DeleteMarkers")
+            for item in inventory.get(collection, [])
+        ]
+
+        if not objects:
+            break
+
+        for start in range(0, len(objects), 1000):
+            batch = objects[start:start + 1000]
+            response = aws_json(
+                [
+                    "s3api",
+                    "delete-objects",
+                    "--bucket",
+                    bucket,
+                    "--delete",
+                    json.dumps(
+                        {
+                            "Objects": batch,
+                            "Quiet": True,
+                        }
+                    ),
+                ],
+                region,
+                display_command=(
+                    "aws s3api delete-objects --bucket "
+                    f"{bucket} --delete <version-batch>"
+                ),
+            )
+
+            if response.get("Errors"):
+                fail("S3 reported errors while deleting state versions.")
+
+            deleted_objects += len(batch)
+
+    run(
+        [
+            "aws",
+            "s3api",
+            "delete-bucket",
+            "--bucket",
+            bucket,
+            "--region",
+            region,
+            "--no-cli-pager",
+        ]
+    )
+
+    if state_bucket_exists(bucket, region):
+        fail("Terraform state bucket still exists after deletion.")
+
+    print(f"Deleted state object versions: {deleted_objects}")
+    print("PASS: Terraform state bucket was deleted.")
+    return deleted_objects
 
 
 def run_destroy_workflow(
@@ -854,25 +943,36 @@ def run_destroy_workflow(
 
     try:
         if apply:
-            if not state_addresses:
-                fail("Destroy mode requires Terraform-managed runtime state.")
-
             confirm_destroy(skip_confirmation)
 
-            if inventory["eks_clusters"]:
-                configure_eks_access(region)
-                cleanup_targets = discover_kubernetes_cleanup_targets(
-                    region
+            if state_addresses:
+                if inventory["eks_clusters"]:
+                    configure_eks_access(region)
+                    cleanup_targets = discover_kubernetes_cleanup_targets(
+                        region
+                    )
+                    delete_kubernetes_runtime()
+                    wait_for_external_cleanup(cleanup_targets, region)
+
+                managed_oidc_provider = any(
+                    "aws_iam_openid_connect_provider.github" in address
+                    for address in state_addresses
                 )
-                delete_kubernetes_runtime()
-                wait_for_external_cleanup(cleanup_targets, region)
 
-            managed_oidc_provider = any(
-                "aws_iam_openid_connect_provider.github" in address
-                for address in state_addresses
-            )
+                apply_destroy_plan(plan_path)
+            else:
+                runtime_count = sum(
+                    len(resources)
+                    for label, resources in inventory.items()
+                    if label != "github_oidc_providers"
+                )
+                if runtime_count:
+                    fail(
+                        "AWS runtime resources exist without matching "
+                        "Terraform-managed state."
+                    )
+                managed_oidc_provider = False
 
-            apply_destroy_plan(plan_path)
             validate_post_destroy(
                 region,
                 bucket,
@@ -880,6 +980,7 @@ def run_destroy_workflow(
                 inventory,
                 managed_oidc_provider,
             )
+            delete_state_bucket(bucket, region)
     finally:
         plan_path.unlink(missing_ok=True)
 
@@ -928,13 +1029,14 @@ def main():
         heading("Termination complete")
         print(f"Terraform delete actions: {len(delete_addresses)}")
         print("PASS: NameGen runtime resources were removed.")
-        print(f"Terraform state bucket retained: {bucket}")
+        print("PASS: Terraform state bucket was removed.")
+        print("PASS: No NameGen AWS resources remain.")
     else:
         heading("Preview complete")
         print(f"Terraform delete actions: {len(delete_addresses)}")
         print(f"Detected NameGen AWS runtime resources: {runtime_count}")
         print("No AWS or Kubernetes resources were deleted.")
-        print(f"Terraform state bucket retained: {bucket}")
+        print(f"Terraform state bucket scheduled for deletion: {bucket}")
 
 
 if __name__ == "__main__":
