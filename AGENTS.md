@@ -55,6 +55,7 @@ local baseline is:
 ```sh
 node --check server.js
 PYTHONPYCACHEPREFIX=/private/tmp/namegen-pycache python3 -m py_compile scripts/launch.py scripts/terminate.py
+PYTHONPYCACHEPREFIX=/private/tmp/namegen-pycache python3 -m unittest discover -s tests -p 'test_*.py'
 terraform -chdir=terraform fmt -check -recursive
 terraform -chdir=terraform validate
 terraform -chdir=terraform/bootstrap fmt -check -recursive

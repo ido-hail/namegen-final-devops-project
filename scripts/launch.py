@@ -40,6 +40,15 @@ PROMETHEUS_HELM_REPOSITORY_URL = (
 )
 GRAFANA_SECRET_NAME = "grafana-admin-credentials"
 
+MONGODB_SECRET_KEYS = {
+    "MONGO_INITDB_ROOT_USERNAME",
+    "MONGO_INITDB_ROOT_PASSWORD",
+    "MONGO_APP_USERNAME",
+    "MONGO_APP_PASSWORD",
+    "MONGODB_URL",
+}
+GRAFANA_SECRET_KEYS = {"admin-user", "admin-password"}
+
 REQUIRED_TOOLS = (
     "aws",
     "terraform",
@@ -368,6 +377,48 @@ def build_mongodb_secret_manifest():
     }
 
 
+def ensure_runtime_secret(
+    namespace,
+    name,
+    expected_keys,
+    manifest_builder,
+    label,
+):
+    existing = run(
+        [
+            "kubectl",
+            "--namespace",
+            namespace,
+            "get",
+            "secret",
+            name,
+            "--output=json",
+        ],
+        allowed_codes=(0, 1),
+    )
+
+    if existing.returncode == 0:
+        secret = json.loads(existing.stdout)
+
+        if set(secret.get("data", {})) != set(expected_keys):
+            fail(f"The existing {label} Secret has unexpected keys.")
+
+        print(f"PASS: Existing {label} Secret was preserved.")
+        return
+
+    error_text = f"{existing.stdout}\n{existing.stderr}".lower()
+
+    if "not found" not in error_text:
+        fail(f"Unable to determine whether the {label} Secret exists.")
+
+    run_with_input(
+        ["kubectl", "create", "--filename", "-"],
+        json.dumps(manifest_builder()),
+        f"kubectl create --filename - # {label} Secret redacted",
+    )
+    print(f"PASS: New {label} Secret was created.")
+
+
 def apply_runtime_manifests(image_reference):
     run(
         [
@@ -379,11 +430,12 @@ def apply_runtime_manifests(image_reference):
         live=True,
     )
 
-    secret_manifest = build_mongodb_secret_manifest()
-    run_with_input(
-        ["kubectl", "apply", "--filename", "-"],
-        json.dumps(secret_manifest),
-        "kubectl apply --filename - # MongoDB Secret redacted",
+    ensure_runtime_secret(
+        KUBERNETES_NAMESPACE,
+        MONGODB_SECRET_NAME,
+        MONGODB_SECRET_KEYS,
+        build_mongodb_secret_manifest,
+        "MongoDB",
     )
 
     rendered = render_kubernetes_manifests(image_reference)
@@ -434,15 +486,7 @@ def validate_runtime_workloads(image_reference, region):
             MONGODB_SECRET_NAME,
         ]
     )
-    expected_secret_keys = {
-        "MONGO_INITDB_ROOT_USERNAME",
-        "MONGO_INITDB_ROOT_PASSWORD",
-        "MONGO_APP_USERNAME",
-        "MONGO_APP_PASSWORD",
-        "MONGODB_URL",
-    }
-
-    if set(secret.get("data", {})) != expected_secret_keys:
+    if set(secret.get("data", {})) != MONGODB_SECRET_KEYS:
         fail("MongoDB runtime Secret does not contain the expected keys.")
 
     deployment = kubectl_json(
@@ -1013,11 +1057,12 @@ def apply_monitoring_stack():
         "kubectl apply --filename - # monitoring Namespace",
     )
 
-    grafana_secret = build_grafana_secret_manifest()
-    run_with_input(
-        ["kubectl", "apply", "--filename", "-"],
-        json.dumps(grafana_secret),
-        "kubectl apply --filename - # Grafana Secret redacted",
+    ensure_runtime_secret(
+        MONITORING_NAMESPACE,
+        GRAFANA_SECRET_NAME,
+        GRAFANA_SECRET_KEYS,
+        build_grafana_secret_manifest,
+        "Grafana",
     )
 
     run(
@@ -1050,7 +1095,7 @@ def apply_monitoring_stack():
             MONITORING_NAMESPACE,
             "--values",
             str(MONITORING_DIR / "values.yaml"),
-            "--atomic",
+            "--rollback-on-failure",
             "--wait",
             "--wait-for-jobs",
             "--timeout",
@@ -1182,7 +1227,7 @@ def validate_monitoring_runtime():
     )
     secret_keys = set(grafana_secret.get("data", {}))
 
-    if secret_keys != {"admin-user", "admin-password"}:
+    if secret_keys != GRAFANA_SECRET_KEYS:
         fail("The Grafana runtime Secret has unexpected keys.")
 
     dashboard_configmap = kubectl_json(
