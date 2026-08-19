@@ -24,7 +24,10 @@ There is no NAT Gateway or Elastic IP. Only the NameGen NLB is public; MongoDB, 
 
 ## Verified deployment
 
-The final environment was validated end to end. The concise, sanitized runtime record is available in [docs/evidence/runtime-validation.md](docs/evidence/runtime-validation.md).
+The final environment was validated end to end. The
+[acceptance report](docs/acceptance-report.md) maps every agreed criterion to
+evidence, and the concise sanitized runtime record is available in
+[docs/evidence/runtime-validation.md](docs/evidence/runtime-validation.md).
 
 **Application and MongoDB:** the public UI generated a name, stored it, and read the updated list from MongoDB.
 
