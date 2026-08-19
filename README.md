@@ -34,6 +34,10 @@ The final environment was validated end to end. The concise, sanitized runtime r
 
 ![GitHub Actions test and deploy jobs succeeded](docs/evidence/github-actions.jpg)
 
+**Monitoring:** the internal Grafana dashboard shows three Ready Pods, zero restarts, and live CPU and memory series for MongoDB and both NameGen Pods.
+
+![Grafana NameGen Kubernetes Runtime dashboard](docs/evidence/grafana-dashboard.jpg)
+
 The evidence deliberately excludes the AWS Account ID, generated endpoint, runtime Secrets, and resource IDs.
 
 ## Repository layout

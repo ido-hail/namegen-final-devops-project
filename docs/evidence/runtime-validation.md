@@ -30,3 +30,5 @@ live NameGen readiness metric series: 3
 ```
 
 The matching GitHub Actions run completed both `Test application` and `Build and deploy immutable image`: [workflow run 32289057576](https://github.com/ido-hail/namegen-final-devops-project/actions/runs/32289057576).
+
+The accompanying `grafana-dashboard.jpg` was captured through a temporary local port-forward. It shows all four dashboard panels with live data; the port-forward was closed immediately afterward.
