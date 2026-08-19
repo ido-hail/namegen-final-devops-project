@@ -1,45 +1,35 @@
 'use strict';
-//require('dotenv').config({ path: '../.env' })
+const assert = require('node:assert/strict');
+const {after, before, describe, it} = require('node:test');
 const { faker } = require('@faker-js/faker');
 const {
-    setPerson, getPersons, getPerson,
+    setPerson, getPersons, getPerson, deletePersons,
 } = require('../data/index');
-const {getConnection, getConnectionUrlSync} = require('../data/connection')
-const expect = require('chai').expect;
-const describe = require('mocha').describe;
-const it = require('mocha').it;
-
-
-
+const {getConnection, closeConnection} = require('../data/connection');
 
 describe('Data Tests', () => {
     before(async () => {
-
+        await deletePersons();
     });
-    it('Can connect to DB', async () => {
+    after(async () => {
+        await deletePersons();
+        await closeConnection();
+    });
+    it('Can connect to DB', {timeout: 5000}, async () => {
         const connection = await getConnection();
-        expect(connection).to.be.an('object');
-        connection.disconnect();
+        assert.equal(typeof connection, 'object');
+        await closeConnection();
+    });
 
-    }).timeout(5000);
-
-    it('Can create Person to DB', async () => {
+    it('Can create Person to DB', {timeout: 5000}, async () => {
         const firstName = faker.name.firstName();
         const lastName = faker.name.firstName();
 
-        await setPerson({firstName,lastName})
-            .catch(e => {
-                console.error(e)
-            });
-        const persons = await getPersons()
-        expect(persons).to.be.an('array');
-        const person = await getPerson(persons[0].id.toString())
-            .catch(e => {
-                console.error(e);
-            })
-        expect(person).to.be.an('object');
-        expect(person.id).to.eq(persons[0].id.toString());
-
-    }).timeout(5000);
-
-})
+        await setPerson({firstName,lastName});
+        const persons = await getPersons();
+        assert.ok(Array.isArray(persons));
+        const person = await getPerson(persons[0].id.toString());
+        assert.equal(typeof person, 'object');
+        assert.equal(person.id, persons[0].id.toString());
+    });
+});
