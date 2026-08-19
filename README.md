@@ -10,6 +10,8 @@ The lifecycle scripts are the supported interface. A default run is a non-mutati
 
 ![NameGen architecture](docs/architecture.svg)
 
+Editable diagrams.net source: [docs/architecture.drawio](docs/architecture.drawio).
+
 The deployment contains:
 
 - an EKS Auto Mode cluster running Kubernetes `1.35` across two public subnets;
@@ -24,22 +26,21 @@ There is no NAT Gateway or Elastic IP. Only the NameGen NLB is public; MongoDB, 
 
 ## Verified deployment
 
-The final environment was validated end to end. The
-[acceptance report](docs/acceptance-report.md) maps every agreed criterion to
-evidence, and the concise sanitized runtime record is available in
+The final environment was validated end to end. A concise sanitized runtime
+record is available in
 [docs/evidence/runtime-validation.md](docs/evidence/runtime-validation.md).
 
 **Application and MongoDB:** the public UI generated a name, stored it, and read the updated list from MongoDB.
 
-![NameGen generated and stored a name](docs/evidence/namegen-ui.jpg)
+![NameGen generated and stored a name](docs/evidence/namegen-ui.png)
 
 **GitHub Actions delivery:** both the application test job and the immutable build-and-deploy job succeeded.
 
-![GitHub Actions test and deploy jobs succeeded](docs/evidence/github-actions.jpg)
+![GitHub Actions test and deploy jobs succeeded](docs/evidence/github-actions.png)
 
 **Monitoring:** the internal Grafana dashboard shows three Ready Pods, zero restarts, and live CPU and memory series for MongoDB and both NameGen Pods.
 
-![Grafana NameGen Kubernetes Runtime dashboard](docs/evidence/grafana-dashboard.jpg)
+![Grafana NameGen Kubernetes Runtime dashboard](docs/evidence/grafana-dashboard.png)
 
 The evidence deliberately excludes the AWS Account ID, generated endpoint, runtime Secrets, and resource IDs.
 

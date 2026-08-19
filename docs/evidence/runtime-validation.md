@@ -38,4 +38,6 @@ The matching GitHub Actions run completed both `Test application` and
 `Build and deploy immutable image`:
 [workflow run 32292889386](https://github.com/ido-hail/namegen-final-devops-project/actions/runs/32292889386).
 
-The accompanying `grafana-dashboard.jpg` was captured through a temporary local port-forward. It shows all four dashboard panels with live data; the port-forward was closed immediately afterward.
+The accompanying `grafana-dashboard.png` was captured through a temporary local
+port-forward. It shows all four dashboard panels with live data; the
+port-forward was closed immediately afterward.
