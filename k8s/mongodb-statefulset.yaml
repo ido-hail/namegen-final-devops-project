@@ -68,9 +68,9 @@ spec:
                     --host 127.0.0.1 \
                     --port 27017 \
                     --quiet \
-                    --username "$MONGO_APP_USERNAME" \
-                    --password "$MONGO_APP_PASSWORD" \
-                    --authenticationDatabase namegen \
+                    --username="$MONGO_APP_USERNAME" \
+                    --password="$MONGO_APP_PASSWORD" \
+                    --authenticationDatabase=namegen \
                     --eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)'
             initialDelaySeconds: 10
             periodSeconds: 5
@@ -86,9 +86,9 @@ spec:
                     --host 127.0.0.1 \
                     --port 27017 \
                     --quiet \
-                    --username "$MONGO_APP_USERNAME" \
-                    --password "$MONGO_APP_PASSWORD" \
-                    --authenticationDatabase namegen \
+                    --username="$MONGO_APP_USERNAME" \
+                    --password="$MONGO_APP_PASSWORD" \
+                    --authenticationDatabase=namegen \
                     --eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)'
             initialDelaySeconds: 60
             periodSeconds: 20

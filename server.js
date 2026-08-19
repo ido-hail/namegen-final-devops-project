@@ -28,7 +28,12 @@ app.get('/api/connection', async (req, res) => {
     logger.info(`Getting connection.`);
     try {
         const conn = await getConnection();
-        const connectionInfo = {host: conn.connections["0"].host, port: conn.connections["0"].port, name:conn.connections["0"].name }
+        const mongoUrl = new URL(process.env.MONGODB_URL);
+        const connectionInfo = {
+            host: mongoUrl.hostname,
+            port: Number(mongoUrl.port || 27017),
+            name: mongoUrl.pathname.slice(1) || "namegen"
+        };
         logger.info(`Got connection info ${JSON.stringify(connectionInfo)}`);
         return res.status(200).send({connectionInfo});
     } catch (e) {
