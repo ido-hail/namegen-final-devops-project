@@ -8,3 +8,4 @@ resources:
   - mongodb-statefulset.yaml
   - namegen-deployment.yaml
   - namegen-service.yaml
+  - namegen-ci-rbac.yaml

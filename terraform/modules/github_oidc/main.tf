@@ -84,23 +84,12 @@ resource "aws_iam_role_policy" "github_actions" {
 }
 
 resource "aws_eks_access_entry" "github_actions" {
-  cluster_name  = var.eks_cluster_name
-  principal_arn = aws_iam_role.github_actions.arn
-  type          = "STANDARD"
+  cluster_name      = var.eks_cluster_name
+  principal_arn     = aws_iam_role.github_actions.arn
+  kubernetes_groups = ["namegen-github-deployer"]
+  type              = "STANDARD"
 
   tags = {
     Name = var.role_name
   }
-}
-
-resource "aws_eks_access_policy_association" "github_actions" {
-  cluster_name  = var.eks_cluster_name
-  principal_arn = aws_iam_role.github_actions.arn
-  policy_arn    = "arn:${var.aws_partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-
-  access_scope {
-    type = "cluster"
-  }
-
-  depends_on = [aws_eks_access_entry.github_actions]
 }

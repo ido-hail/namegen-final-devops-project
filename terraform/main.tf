@@ -54,5 +54,4 @@ module "github_oidc" {
   ecr_repository_arn         = module.ecr.repository_arn
   eks_cluster_name           = module.eks.cluster_name
   eks_cluster_arn            = module.eks.cluster_arn
-  aws_partition              = data.aws_partition.current.partition
 }

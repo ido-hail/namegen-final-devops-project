@@ -28,8 +28,3 @@ variable "eks_cluster_arn" {
   description = "ARN of the EKS cluster deployed by the workflow."
   type        = string
 }
-
-variable "aws_partition" {
-  description = "AWS partition discovered at runtime."
-  type        = string
-}
