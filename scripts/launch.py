@@ -2337,9 +2337,7 @@ def print_apply_summary(runtime_outputs, state_bucket, git_sha):
     print("PASS: Public NLB application validation completed.")
     print("PASS: MongoDB persistence validation completed.")
     print("PASS: Prometheus and Grafana validation completed.")
-    print(
-        "NEXT: Capture the five required screenshots before teardown."
-    )
+    print("NEXT: Capture the required deployment evidence before teardown.")
 
 
 def main():
