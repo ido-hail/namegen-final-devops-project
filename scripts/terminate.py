@@ -20,6 +20,7 @@ ECR_REPOSITORY = "namegen"
 IAM_ROLE_PREFIX = "namegen-"
 DEPLOYMENT_BRANCH = "main"
 STATE_KEY = "namegen/terraform.tfstate"
+LOAD_BALANCER_NAME_PREFIX = "k8s-namegen-namegen-"
 
 REQUIRED_TOOLS = (
     "aws",
@@ -451,32 +452,49 @@ def discover_kubernetes_cleanup_targets(region):
         item.get("hostname") for item in ingress if item.get("hostname")
     ]
 
-    if len(hostnames) != 1:
-        fail("The NameGen Service does not expose exactly one NLB hostname.")
+    if len(hostnames) > 1:
+        fail("The NameGen Service exposes multiple NLB hostnames.")
 
-    hostname = hostnames[0]
+    hostname = hostnames[0] if hostnames else None
     load_balancers = aws_json(
         ["elbv2", "describe-load-balancers"],
         region,
     ).get("LoadBalancers", [])
-    matching_load_balancers = [
-        load_balancer
-        for load_balancer in load_balancers
-        if load_balancer.get("DNSName") == hostname
-    ]
+    if hostname:
+        matching_load_balancers = [
+            load_balancer
+            for load_balancer in load_balancers
+            if load_balancer.get("DNSName") == hostname
+        ]
+    else:
+        matching_load_balancers = [
+            load_balancer
+            for load_balancer in load_balancers
+            if load_balancer.get("LoadBalancerName", "").startswith(
+                LOAD_BALANCER_NAME_PREFIX
+            )
+        ]
 
-    if len(matching_load_balancers) != 1:
-        fail("AWS did not return exactly one matching NameGen NLB.")
+    if len(matching_load_balancers) > 1:
+        fail("AWS returned multiple matching NameGen load balancers.")
 
-    load_balancer = matching_load_balancers[0]
-    if (
+    load_balancer = (
+        matching_load_balancers[0]
+        if matching_load_balancers
+        else None
+    )
+    if load_balancer and (
         load_balancer.get("Type") != "network"
         or load_balancer.get("Scheme") != "internet-facing"
     ):
         fail("The discovered NameGen load balancer is not the public NLB.")
 
-    load_balancer_arn = load_balancer.get("LoadBalancerArn")
-    if not load_balancer_arn:
+    load_balancer_arn = (
+        load_balancer.get("LoadBalancerArn")
+        if load_balancer
+        else None
+    )
+    if load_balancer and not load_balancer_arn:
         fail("The NameGen NLB ARN is unavailable.")
 
     pvc = kubectl_json(
@@ -505,8 +523,11 @@ def discover_kubernetes_cleanup_targets(region):
     if not re.fullmatch(r"vol-[0-9a-f]+", volume_id or ""):
         fail("The MongoDB EBS Volume ID is invalid.")
 
-    print(f"NLB hostname: {hostname}")
-    print(f"NLB ARN: {load_balancer_arn}")
+    if load_balancer:
+        print(f"NLB hostname: {load_balancer.get('DNSName')}")
+        print(f"NLB ARN: {load_balancer_arn}")
+    else:
+        print("NLB: not provisioned")
     print(f"MongoDB PersistentVolume: {persistent_volume_name}")
     print(f"MongoDB EBS volume: {volume_id}")
     print("PASS: External cleanup targets were discovered before deletion.")
@@ -599,20 +620,23 @@ def delete_kubernetes_runtime():
 def wait_for_external_cleanup(cleanup_targets, region):
     heading("AWS load balancer and volume cleanup")
 
-    run(
-        [
-            "aws",
-            "elbv2",
-            "wait",
-            "load-balancers-deleted",
-            "--load-balancer-arns",
-            cleanup_targets["nlb_arn"],
-            "--region",
-            region,
-            "--no-cli-pager",
-        ],
-        live=True,
-    )
+    if cleanup_targets["nlb_arn"]:
+        run(
+            [
+                "aws",
+                "elbv2",
+                "wait",
+                "load-balancers-deleted",
+                "--load-balancer-arns",
+                cleanup_targets["nlb_arn"],
+                "--region",
+                region,
+                "--no-cli-pager",
+            ],
+            live=True,
+        )
+    else:
+        print("PASS: No NameGen NLB required deletion.")
 
     run(
         [
@@ -799,6 +823,16 @@ def validate_post_destroy(
     volumes = aws_json(["ec2", "describe-volumes"], region).get(
         "Volumes", []
     )
+
+    remaining_namegen_load_balancers = [
+        load_balancer.get("LoadBalancerArn")
+        for load_balancer in load_balancers
+        if load_balancer.get("LoadBalancerName", "").startswith(
+            LOAD_BALANCER_NAME_PREFIX
+        )
+    ]
+    if remaining_namegen_load_balancers:
+        fail("A NameGen load balancer remains after teardown.")
 
     if cleanup_targets:
         if any(
