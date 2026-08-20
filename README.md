@@ -237,6 +237,16 @@ helm template namegen-monitoring \
 - Monitoring uses internal `ClusterIP` Services and ephemeral storage.
 - EKS, its compute, EBS, and the internet-facing NLB are billable. Run the teardown workflow when the review is complete.
 
-## License
+## License and academic integrity
 
-This project retains the original [MIT License](LICENSE).
+The original NameGen application portions remain available under Bob
+Reselman's MIT License. The DevOps infrastructure, automation, Kubernetes and
+monitoring configuration, documentation, architecture, evidence, and later
+project-specific contributions are Copyright (c) 2026 Ido Hail.
+
+This public repository may be viewed, cloned, forked through GitHub, and run
+for personal review, academic assessment, or portfolio evaluation. The
+project-specific materials may not be republished, redistributed, copied into
+another project, or submitted as another person's original work without prior
+written permission. See the complete [Copyright and License Notice](LICENSE)
+for the exact scope and the original MIT terms.

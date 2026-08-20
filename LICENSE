@@ -1,3 +1,27 @@
+NameGen Final DevOps Project
+Copyright and License Notice
+
+Effective date: 20 August 2026
+
+1. Original NameGen application
+
+The original NameGen application was imported in Git commit 7ec4a55. The
+original portions of the following files remain licensed under the MIT License
+by their original copyright holder, Bob Reselman:
+
+- README.md
+- data/connection.js
+- data/index.js
+- data/schemas.js
+- logger.js
+- package-lock.json
+- package.json
+- public/index.html
+- server.js
+- tests/data-tests.js
+
+The MIT License applicable to those original portions follows:
+
 MIT License
 
 Copyright (c) 2022 Bob Reselman
@@ -19,3 +43,46 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+2. DevOps project materials and later contributions
+
+Copyright (c) 2026 Ido Hail. All rights reserved except for the limited
+permission stated below.
+
+This section covers the original DevOps, DevSecOps, infrastructure,
+automation, deployment, monitoring, documentation, architecture, evidence and
+testing materials created by Ido Hail for this repository. It includes:
+
+- .github/workflows/
+- Dockerfile and .dockerignore
+- terraform/
+- k8s/
+- monitoring/
+- scripts/
+- docs/
+- tests/test_*.py
+- project-specific additions and modifications made after commit 7ec4a55
+
+Limited evaluation permission is granted, without fee, to view this public
+repository, clone or fork it through GitHub, and execute an unmodified copy
+solely for personal review, academic assessment, or portfolio evaluation.
+All copyright and license notices must remain intact.
+
+No permission is granted to copy these project-specific materials into
+another project or repository; redistribute, republish, sublicense or sell
+them; create and distribute derivative works from them; or submit any portion
+as another person's original academic or professional work. Any use beyond
+the limited evaluation permission requires prior written permission from
+Ido Hail.
+
+3. Scope and third-party rights
+
+The restrictions in section 2 apply only to copyrightable contributions owned
+by Ido Hail. They do not restrict the rights granted under the MIT License for
+the original NameGen application portions, and they do not replace licenses
+that apply to third-party dependencies, container images, tools or services.
+
+The project-specific materials are provided "AS IS", without warranty of any
+kind, express or implied, including warranties of merchantability, fitness for
+a particular purpose and noninfringement. In no event shall Ido Hail be liable
+for any claim, damages or other liability arising from their use.
